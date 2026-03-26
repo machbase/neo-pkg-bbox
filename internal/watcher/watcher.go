@@ -1,31 +1,24 @@
-//go:build linux
-
 package watcher
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
-	"github.com/machbase/neo-pkg-blackbox/internal/db"
-	"github.com/machbase/neo-pkg-blackbox/internal/ffmpeg"
-	"github.com/machbase/neo-pkg-blackbox/internal/logger"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
-	"golang.org/x/sys/unix"
+	"github.com/fsnotify/fsnotify"
+	"github.com/machbase/neo-pkg-blackbox/internal/db"
+	"github.com/machbase/neo-pkg-blackbox/internal/ffmpeg"
+	"github.com/machbase/neo-pkg-blackbox/internal/logger"
 )
-
-const abnormal = unix.POLLHUP | unix.POLLERR | unix.POLLNVAL
 
 // WatcherRule represents a watcher rule configuration.
 type WatcherRule struct {
@@ -45,7 +38,7 @@ type ptsOffset struct {
 
 // updateOffset은 새로운 오프셋 샘플로 기존 값을 갱신한다.
 // - 첫 샘플이거나 큰 점프(>2초)가 발생하면 즉시 리셋 (스트림 재시작 대응)
-// - 그 외엔 EMA(지수이동평균)로 평활화하여 inotify 지터를 흡수
+// - 그 외엔 EMA(지수이동평균)로 평활화하여 이벤트 지터를 흡수
 func (o *ptsOffset) updateOffset(newOffset float64) {
 	const (
 		resetThreshold = 2.0 // 초: 이보다 큰 차이면 리셋
@@ -80,9 +73,8 @@ type Watcher struct {
 
 	// 동적 watch 관리 (thread-safe)
 	mu       sync.Mutex
-	inFd     int
+	fsw      *fsnotify.Watcher
 	watchSet *WatchSet
-	mask     uint32
 
 	// 카메라별 PTS offset (mu로 보호)
 	offsets map[string]*ptsOffset
@@ -98,69 +90,66 @@ func New(neo *db.Machbase, ffRunner *ffmpeg.FFmpegRunner, cameraDir string) *Wat
 }
 
 type WatchSet struct {
-	wdToRule   map[int32]WatcherRule // watch descriptor -> rule
-	cameraToWd map[string]int32      // cameraID -> watch descriptor
+	dirToRule   map[string]WatcherRule // source dir -> rule
+	cameraToDir map[string]string      // cameraID -> source dir
 }
 
-func (ws *WatchSet) RemoveAll(inFd int) {
-	for wd := range ws.wdToRule {
-		_, _ = unix.InotifyRmWatch(inFd, uint32(wd))
+func (ws *WatchSet) RemoveAll(fsw *fsnotify.Watcher) {
+	for dir := range ws.dirToRule {
+		_ = fsw.Remove(dir)
 	}
 }
 
-func (ws *WatchSet) Add(inFd int, rule WatcherRule, mask uint32) error {
+func (ws *WatchSet) Add(fsw *fsnotify.Watcher, rule WatcherRule) error {
 	// 이미 해당 카메라가 등록되어 있으면 먼저 제거
-	if oldWd, exists := ws.cameraToWd[rule.CameraID]; exists {
-		// 기존 watch 제거
-		_, _ = unix.InotifyRmWatch(inFd, uint32(oldWd))
-		delete(ws.wdToRule, oldWd)
-		delete(ws.cameraToWd, rule.CameraID)
+	if oldDir, exists := ws.cameraToDir[rule.CameraID]; exists {
+		_ = fsw.Remove(oldDir)
+		delete(ws.dirToRule, oldDir)
+		delete(ws.cameraToDir, rule.CameraID)
 	}
 
-	wd, err := unix.InotifyAddWatch(inFd, rule.SourceDir, mask)
-	if err != nil {
-		return fmt.Errorf("failed to inotify add watch(source_dir=%q): %v", rule.SourceDir, err)
+	if err := fsw.Add(rule.SourceDir); err != nil {
+		return fmt.Errorf("failed to add watch(source_dir=%q): %v", rule.SourceDir, err)
 	}
 
-	ws.wdToRule[int32(wd)] = rule
-	ws.cameraToWd[rule.CameraID] = int32(wd)
+	ws.dirToRule[rule.SourceDir] = rule
+	ws.cameraToDir[rule.CameraID] = rule.SourceDir
 	return nil
 }
 
-func (ws *WatchSet) Remove(inFd int, cameraID string) error {
-	wd, ok := ws.cameraToWd[cameraID]
+func (ws *WatchSet) Remove(fsw *fsnotify.Watcher, cameraID string) error {
+	dir, ok := ws.cameraToDir[cameraID]
 	if !ok {
 		return fmt.Errorf("camera %q not found in watch set", cameraID)
 	}
 
-	if _, err := unix.InotifyRmWatch(inFd, uint32(wd)); err != nil {
+	if err := fsw.Remove(dir); err != nil {
 		return fmt.Errorf("failed to remove watch: %v", err)
 	}
 
-	delete(ws.wdToRule, wd)
-	delete(ws.cameraToWd, cameraID)
+	delete(ws.dirToRule, dir)
+	delete(ws.cameraToDir, cameraID)
 	return nil
 }
 
-func (ws *WatchSet) GetRule(wd int32) (WatcherRule, bool) {
-	rule, ok := ws.wdToRule[wd]
+func (ws *WatchSet) GetRule(dir string) (WatcherRule, bool) {
+	rule, ok := ws.dirToRule[dir]
 	return rule, ok
 }
 
-func (w *Watcher) addWatches(inFd int, rules []WatcherRule, mask uint32) (*WatchSet, error) {
-	ws := WatchSet{
-		wdToRule:   make(map[int32]WatcherRule, len(rules)),
-		cameraToWd: make(map[string]int32, len(rules)),
+func (w *Watcher) addWatches(fsw *fsnotify.Watcher, rules []WatcherRule) (*WatchSet, error) {
+	ws := &WatchSet{
+		dirToRule:   make(map[string]WatcherRule, len(rules)),
+		cameraToDir: make(map[string]string, len(rules)),
 	}
 
 	for _, rule := range rules {
-		if err := ws.Add(inFd, rule, mask); err != nil {
-			// 하나의 rule이 실패해도 전체 종료 : 무시하고 나머지 rule 실행
+		if err := ws.Add(fsw, rule); err != nil {
 			return nil, err
 		}
 	}
 
-	return &ws, nil
+	return ws, nil
 }
 
 type RuleFailure struct {
@@ -261,152 +250,73 @@ func (w *Watcher) prepare() ([]WatcherRule, []RuleFailure) {
 	return active, failed
 }
 
-func (w *Watcher) retryLoop(ctx context.Context, req chan int) {
-
-}
-
 func (w *Watcher) Run(ctx context.Context) error {
 	active, _ := w.prepare() // active, failed
 
 	logger.GetLogger().Infof("Start Watcher (loaded %d rules from camera configs)", len(active))
 
-	inFd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
+	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
 	}
-	defer unix.Close(inFd)
+	defer fsw.Close()
 
-	mask := uint32(unix.IN_CLOSE_WRITE | unix.IN_MOVED_TO)
-
-	watchSet, err := w.addWatches(inFd, active, mask)
+	watchSet, err := w.addWatches(fsw, active)
 	if err != nil {
 		return err
 	}
 
 	// Store in watcher for dynamic add/remove
 	w.mu.Lock()
-	w.inFd = inFd
+	w.fsw = fsw
 	w.watchSet = watchSet
-	w.mask = mask
 	w.mu.Unlock()
 
-	wakeFd, err := unix.Eventfd(0, unix.EFD_CLOEXEC|unix.EFD_NONBLOCK)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(wakeFd)
-
-	go func() {
-		<-ctx.Done()
-		var b [8]byte
-		binary.LittleEndian.PutUint64(b[:], 1)
-		_, _ = unix.Write(wakeFd, b[:])
-	}()
-
-	pfds := []unix.PollFd{
-		{Fd: int32(inFd), Events: unix.POLLIN},
-		{Fd: int32(wakeFd), Events: unix.POLLIN},
-	}
-
-	buf := make([]byte, 64*1024)
-
 	for {
-		_, err := unix.Poll(pfds, -1)
-		if err != nil {
-			if err == unix.EINTR {
-				continue
-			}
-			return err
-		}
-
-		reWake := pfds[1]
-		if reWake.Revents&abnormal != 0 {
-			return fmt.Errorf("wakeFd abnormal revents=%#x", reWake.Revents)
-		}
-		if reWake.Revents&unix.POLLIN != 0 {
-			var tmp [8]byte
-			_, _ = unix.Read(wakeFd, tmp[:])
-			watchSet.RemoveAll(inFd)
+		select {
+		case <-ctx.Done():
+			watchSet.RemoveAll(fsw)
 			logger.GetLogger().Info("Stop Watcher")
 			return nil
-		}
 
-		reIn := pfds[0]
-		if reIn.Revents&unix.POLLIN != 0 {
-			for {
-				n, err := unix.Read(inFd, buf)
-				if err != nil {
-					if err == unix.EAGAIN {
-						break
-					}
-					if err == unix.EINTR {
-						continue
-					}
-					return err
-				}
-
-				if n <= 0 {
-					break
-				}
-
-				parseInotifyEvents(buf[:n], func(ev unix.InotifyEvent, name string) {
-					w.mu.Lock()
-					rule, ok := watchSet.GetRule(ev.Wd)
-					w.mu.Unlock()
-
-					if !ok {
-						return
-					}
-					if err := w.handleEvent(ctx, ev, name, rule); err != nil {
-						logger.GetLogger().Infof("handleEvent: %v", err)
-						// return fmt.Errorf("handleEvent: %v", err)
-					}
-				})
+		case event, ok := <-fsw.Events:
+			if !ok {
+				return nil
 			}
-		}
-		if reIn.Revents&abnormal != 0 {
-			return fmt.Errorf("inFd abnormal revents=%#x", reIn.Revents)
-		}
-	}
-}
-
-func parseInotifyEvents(b []byte, fn func(ev unix.InotifyEvent, name string)) {
-	const sz = unix.SizeofInotifyEvent
-
-	for len(b) >= sz {
-		raw := b[:sz]
-		evVal := *(*unix.InotifyEvent)(unsafe.Pointer(&raw[0]))
-
-		nameLen := int(evVal.Len)
-		name := ""
-		if nameLen > 0 && len(b) >= sz+nameLen {
-			nb := b[sz : sz+nameLen]
-			if i := bytes.IndexByte(nb, 0); i >= 0 {
-				nb = nb[:i]
+			// Create 이벤트만 처리 (IN_MOVED_TO 대응)
+			// fsnotify는 Linux에서 IN_CREATE|IN_MOVED_TO 모두 Create로 매핑
+			if !event.Has(fsnotify.Create) {
+				continue
 			}
-			name = string(nb)
+			dir := filepath.Dir(event.Name)
+			name := filepath.Base(event.Name)
+
+			w.mu.Lock()
+			rule, ok := watchSet.GetRule(dir)
+			w.mu.Unlock()
+
+			if !ok {
+				continue
+			}
+			if err := w.handleEvent(ctx, name, rule); err != nil {
+				logger.GetLogger().Infof("handleEvent: %v", err)
+			}
+
+		case err, ok := <-fsw.Errors:
+			if !ok {
+				return nil
+			}
+			logger.GetLogger().Warnf("fsnotify error: %v", err)
 		}
-
-		fn(evVal, name)
-
-		step := sz + nameLen
-		if step > len(b) {
-			return
-		}
-
-		b = b[step:]
 	}
 }
 
 // 특정 이름으로 처리하는 방식은 나중에 필요할때 추가
-func (w *Watcher) handleEvent(ctx context.Context, ev unix.InotifyEvent, name string, rule WatcherRule) error {
+func (w *Watcher) handleEvent(ctx context.Context, name string, rule WatcherRule) error {
 	if name == "" {
 		return nil
 	}
 	if !strings.EqualFold(filepath.Ext(name), rule.Ext) {
-		return nil
-	}
-	if ev.Mask&unix.IN_MOVED_TO == 0 {
 		return nil
 	}
 
@@ -549,7 +459,7 @@ func (w *Watcher) proecessChunk(ctx context.Context, rule WatcherRule, name stri
 	}
 
 	// PTS→절대시간 변환 (offset 매핑)
-	// wallEnd = inotify 감지 시각 ≈ 세그먼트 끝 시점의 현실 시간
+	// wallEnd = 이벤트 감지 시각 ≈ 세그먼트 끝 시점의 현실 시간
 	// observedEpochMs는 ffprobe/파일이동 이전에 찍힌 값이므로 더 정확
 	// offsetNew = wallEnd - endPts → PTS에 더하면 epoch가 됨
 	wallEnd := float64(observedEpochMs) / 1e3
@@ -657,11 +567,9 @@ func checkFileMinSize(path string, minSize int64) (bool, error) {
 		return false, err
 	}
 	if info.IsDir() {
-		// log
 		return false, fmt.Errorf("%q is directory", path)
 	}
 	if info.Size() < minSize {
-		// log
 		return false, fmt.Errorf("%q size(%d) is too small (<%d)", path, info.Size(), minSize)
 	}
 	return true, nil
@@ -677,7 +585,6 @@ func (w *Watcher) AddWatch(ctx context.Context, rule WatcherRule) error {
 		return fmt.Errorf("watcher not running")
 	}
 
-	// Prepare directories
 	if rule.TargetDir == "" {
 		return fmt.Errorf("target_dir is empty")
 	}
@@ -688,8 +595,7 @@ func (w *Watcher) AddWatch(ctx context.Context, rule WatcherRule) error {
 		return fmt.Errorf("failed to mkdir target_dir=%q: %v", rule.TargetDir, err)
 	}
 
-	// Add to inotify watch set
-	if err := w.watchSet.Add(w.inFd, rule, w.mask); err != nil {
+	if err := w.watchSet.Add(w.fsw, rule); err != nil {
 		return err
 	}
 
@@ -707,7 +613,7 @@ func (w *Watcher) RemoveWatch(ctx context.Context, cameraID string) error {
 		return fmt.Errorf("watcher not running")
 	}
 
-	if err := w.watchSet.Remove(w.inFd, cameraID); err != nil {
+	if err := w.watchSet.Remove(w.fsw, cameraID); err != nil {
 		return err
 	}
 
