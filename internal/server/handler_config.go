@@ -154,7 +154,6 @@ func cfgToDTO(cfg *config.AppConfig) AppConfigDTO {
 			TimeoutSeconds: cfg.Machbase.TimeoutSeconds,
 			Token:          cfg.Machbase.APIToken,
 			User:           cfg.Machbase.User,
-			Password:       cfg.Machbase.Password,
 		},
 		Ffmpeg: FfmpegConfigAPI{
 			Binary: cfg.FFmpeg.Binary,
