@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/machbase/neo-pkg-blackbox/internal/logger"
+	"github.com/machbase/neo-pkg-bbox/internal/logger"
 	"net/http"
 	"net/url"
 	"os"

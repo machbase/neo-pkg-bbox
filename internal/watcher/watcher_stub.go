@@ -5,9 +5,9 @@ package watcher
 import (
 	"context"
 	"fmt"
-	"github.com/machbase/neo-pkg-blackbox/internal/db"
-	"github.com/machbase/neo-pkg-blackbox/internal/ffmpeg"
-	"github.com/machbase/neo-pkg-blackbox/internal/logger"
+	"github.com/machbase/neo-pkg-bbox/internal/db"
+	"github.com/machbase/neo-pkg-bbox/internal/ffmpeg"
+	"github.com/machbase/neo-pkg-bbox/internal/logger"
 )
 
 // WatcherRule represents a watcher rule configuration.
