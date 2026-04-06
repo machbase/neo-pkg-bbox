@@ -48,6 +48,11 @@ func (h *Handler) ProxyMachbase(c *gin.Context) {
 func (h *Handler) ProxyMachbaseWeb(c *gin.Context) {
 	path := c.Request.URL.Path
 
+	var extra []http.Header
+	if auth := c.GetHeader("Authorization"); auth != "" {
+		extra = append(extra, http.Header{"Authorization": {auth}})
+	}
+
 	resp, err := h.machbase.Forward(
 		c.Request.Context(),
 		c.Request.Method,
@@ -55,6 +60,7 @@ func (h *Handler) ProxyMachbaseWeb(c *gin.Context) {
 		c.Request.URL.RawQuery,
 		c.Request.Body,
 		c.GetHeader("Content-Type"),
+		extra...,
 	)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"success": false, "reason": err.Error()})
