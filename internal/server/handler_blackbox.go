@@ -3,8 +3,8 @@ package server
 import (
 	"fmt"
 	"math"
-	"github.com/machbase/neo-pkg-blackbox/internal/db"
-	"github.com/machbase/neo-pkg-blackbox/internal/logger"
+	"github.com/machbase/neo-pkg-bbox/internal/db"
+	"github.com/machbase/neo-pkg-bbox/internal/logger"
 	"net/http"
 	"os"
 	"path/filepath"

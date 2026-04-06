@@ -10,15 +10,15 @@ import (
 
 	"path/filepath"
 
-	"github.com/machbase/neo-pkg-blackbox/internal/ai"
-	"github.com/machbase/neo-pkg-blackbox/internal/config"
-	"github.com/machbase/neo-pkg-blackbox/internal/db"
-	"github.com/machbase/neo-pkg-blackbox/internal/ffmpeg"
-	"github.com/machbase/neo-pkg-blackbox/internal/logger"
-	"github.com/machbase/neo-pkg-blackbox/internal/mediamtx"
-	"github.com/machbase/neo-pkg-blackbox/internal/server"
-	"github.com/machbase/neo-pkg-blackbox/internal/tools"
-	"github.com/machbase/neo-pkg-blackbox/internal/watcher"
+	"github.com/machbase/neo-pkg-bbox/internal/ai"
+	"github.com/machbase/neo-pkg-bbox/internal/config"
+	"github.com/machbase/neo-pkg-bbox/internal/db"
+	"github.com/machbase/neo-pkg-bbox/internal/ffmpeg"
+	"github.com/machbase/neo-pkg-bbox/internal/logger"
+	"github.com/machbase/neo-pkg-bbox/internal/mediamtx"
+	"github.com/machbase/neo-pkg-bbox/internal/server"
+	"github.com/machbase/neo-pkg-bbox/internal/tools"
+	"github.com/machbase/neo-pkg-bbox/internal/watcher"
 
 	"golang.org/x/sync/errgroup"
 )

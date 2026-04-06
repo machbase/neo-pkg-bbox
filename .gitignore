@@ -11,3 +11,4 @@ tools/*/ffmpeg
 tools/*/ffprobe
 *.old
 regress/
+mk/

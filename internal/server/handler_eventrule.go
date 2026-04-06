@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/machbase/neo-pkg-blackbox/internal/logger"
+	"github.com/machbase/neo-pkg-bbox/internal/logger"
 
 	"github.com/gin-gonic/gin"
 )
