@@ -12,4 +12,3 @@ tools/*/ffprobe
 *.old
 regress/
 mk/
-settings.json

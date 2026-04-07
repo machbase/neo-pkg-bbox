@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/machbase/neo-pkg-blackbox/internal/config"
+	"github.com/machbase/neo-pkg-bbox/internal/config"
 
 	"github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"

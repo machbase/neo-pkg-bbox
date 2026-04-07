@@ -1,6 +1,6 @@
 # NOTE: This package definition is primarily managed in neo-pkg and mirrored here for history tracking.
 distributable:
-  github: machbase/neo-pkg-blackbox
+  github: machbase/neo-pkg-bbox
   strip_components: 1
 
 description: |
