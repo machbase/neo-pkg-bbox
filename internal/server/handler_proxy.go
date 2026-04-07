@@ -40,3 +40,40 @@ func (h *Handler) ProxyMachbase(c *gin.Context) {
 	c.Status(resp.StatusCode)
 	io.Copy(c.Writer, resp.Body) //nolint:errcheck
 }
+
+// ProxyMachbaseWeb godoc
+// ANY /web/*path
+// /web/* 요청을 machbase-neo 로 중계한다.
+// Content-Type, X-Chart-Type 헤더를 전달한다.
+func (h *Handler) ProxyMachbaseWeb(c *gin.Context) {
+	path := c.Request.URL.Path
+
+	var extra []http.Header
+	if auth := c.GetHeader("Authorization"); auth != "" {
+		extra = append(extra, http.Header{"Authorization": {auth}})
+	}
+
+	resp, err := h.machbase.Forward(
+		c.Request.Context(),
+		c.Request.Method,
+		path,
+		c.Request.URL.RawQuery,
+		c.Request.Body,
+		c.GetHeader("Content-Type"),
+		extra...,
+	)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"success": false, "reason": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	for key, values := range resp.Header {
+		for _, v := range values {
+			c.Header(key, v)
+		}
+	}
+
+	c.Status(resp.StatusCode)
+	io.Copy(c.Writer, resp.Body) //nolint:errcheck
+}

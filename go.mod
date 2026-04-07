@@ -1,4 +1,4 @@
-module github.com/machbase/neo-pkg-blackbox
+module github.com/machbase/neo-pkg-bbox
 
 go 1.25.3
 

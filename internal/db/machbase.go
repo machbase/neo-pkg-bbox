@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/machbase/neo-pkg-blackbox/internal/config"
-	"github.com/machbase/neo-pkg-blackbox/internal/logger"
+	"github.com/machbase/neo-pkg-bbox/internal/config"
+	"github.com/machbase/neo-pkg-bbox/internal/logger"
 )
 
 // Machbase is a client for Machbase HTTP API.
@@ -20,6 +20,12 @@ type Machbase struct {
 	baseURL  *url.URL
 	client   *http.Client
 	apiToken string
+	user     string
+	password string
+
+	// JWT token cache
+	jwtToken  string
+	jwtExpiry time.Time
 }
 
 // NewMachbase creates a new Machbase client.
@@ -40,6 +46,8 @@ func NewMachbase(cfg config.MachbaseConfig) (*Machbase, error) {
 		baseURL:  u,
 		client:   &http.Client{Timeout: timeout},
 		apiToken: cfg.APIToken,
+		user:     cfg.User,
+		password: cfg.Password,
 	}, nil
 }
 
@@ -229,10 +237,54 @@ func (m *Machbase) WriteRows(ctx context.Context, table string, columns []string
 	return nil
 }
 
+// login calls /web/api/login to obtain a JWT access token.
+func (m *Machbase) login(ctx context.Context) (string, error) {
+	// Return cached token if still valid (with 30s margin)
+	if m.jwtToken != "" && time.Now().Before(m.jwtExpiry.Add(-30*time.Second)) {
+		return m.jwtToken, nil
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"loginName": m.user,
+		"password":  m.password,
+	})
+
+	u := m.baseURL.JoinPath("/web/api/login")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("create login request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("login request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Success     bool   `json:"success"`
+		Reason      string `json:"reason"`
+		AccessToken string `json:"accessToken"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode login response: %w", err)
+	}
+	if !result.Success {
+		return "", fmt.Errorf("login failed: %s", result.Reason)
+	}
+
+	m.jwtToken = result.AccessToken
+	m.jwtExpiry = time.Now().Add(5 * time.Minute) // conservative cache TTL
+
+	return m.jwtToken, nil
+}
+
 // Forward proxies an arbitrary request to the machbase server and returns the raw response.
 // The caller is responsible for closing the response body.
-// Authorization header is added automatically if apiToken is set.
-func (m *Machbase) Forward(ctx context.Context, method, path string, rawQuery string, body io.Reader, contentType string) (*http.Response, error) {
+// /web/* 경로는 user/password가 설정된 경우 JWT 인증을 사용한다.
+// 그 외 경로는 apiToken(Bearer)을 사용한다.
+func (m *Machbase) Forward(ctx context.Context, method, path string, rawQuery string, body io.Reader, contentType string, extraHeaders ...http.Header) (*http.Response, error) {
 	u := m.baseURL.JoinPath(path)
 	u.RawQuery = rawQuery
 
@@ -243,7 +295,22 @@ func (m *Machbase) Forward(ctx context.Context, method, path string, rawQuery st
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	if m.apiToken != "" {
+	for _, h := range extraHeaders {
+		for key, values := range h {
+			for _, v := range values {
+				req.Header.Set(key, v)
+			}
+		}
+	}
+
+	// /web/* paths use JWT auth, others use apiToken
+	if strings.HasPrefix(path, "/web/") && m.user != "" {
+		token, err := m.login(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("auth: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if m.apiToken != "" {
 		req.Header.Set("Authorization", "Bearer "+m.apiToken)
 	}
 

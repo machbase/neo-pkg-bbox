@@ -8,10 +8,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/machbase/neo-pkg-blackbox/internal/config"
-	"github.com/machbase/neo-pkg-blackbox/internal/db"
-	"github.com/machbase/neo-pkg-blackbox/internal/ffmpeg"
-	"github.com/machbase/neo-pkg-blackbox/internal/logger"
+	"github.com/machbase/neo-pkg-bbox/internal/config"
+	"github.com/machbase/neo-pkg-bbox/internal/db"
+	"github.com/machbase/neo-pkg-bbox/internal/ffmpeg"
+	"github.com/machbase/neo-pkg-bbox/internal/logger"
 
 	"github.com/gin-gonic/gin"
 )
@@ -139,16 +139,19 @@ func (s *Server) routes(serveWeb bool) {
 	api.POST("/mvs/camera", s.handler.CreateMvsCamera)
 
 	// ==================================================================
-	// Machbase proxy — /db/* 요청을 machbase-neo 로 중계
+	// Machbase proxy — machbase-neo 로 중계
 	s.engine.POST("/db/tql", s.handler.ProxyMachbase)
 
-	// Web UI - Serve static frontend (-web 플래그를 줬을 때만 활성화)
+	s.engine.GET("/web/*path", s.handler.ProxyMachbaseWeb)
+	s.engine.POST("/web/*path", s.handler.ProxyMachbaseWeb)
+
+	// Static frontend UI (-web 플래그를 줬을 때만 활성화)
 	if serveWeb {
 		webDir := filepath.Join(s.cfg.BaseDir, "web")
 		s.engine.GET("/", func(c *gin.Context) {
 			c.File(filepath.Join(webDir, "index.html"))
 		})
-		s.engine.StaticFS("/web", http.Dir(webDir))
+		s.engine.StaticFS("/ui", http.Dir(webDir))
 		logger.GetLogger().Infof("[server] web UI enabled (dir: %s)", webDir)
 	}
 }
