@@ -150,7 +150,7 @@ func cfgToDTO(cfg *config.AppConfig) AppConfigDTO {
 			Host:           cfg.Machbase.Host,
 			Port:           cfg.Machbase.Port,
 			TimeoutSeconds: cfg.Machbase.TimeoutSeconds,
-			Token:          cfg.Machbase.APIToken,
+			Token: cfg.Machbase.APIToken,
 		},
 		Ffmpeg: FfmpegConfigAPI{
 			Binary: cfg.FFmpeg.Binary,

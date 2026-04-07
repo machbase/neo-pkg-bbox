@@ -231,8 +231,9 @@ func (m *Machbase) WriteRows(ctx context.Context, table string, columns []string
 
 // Forward proxies an arbitrary request to the machbase server and returns the raw response.
 // The caller is responsible for closing the response body.
-// Authorization header is added automatically if apiToken is set.
-func (m *Machbase) Forward(ctx context.Context, method, path string, rawQuery string, body io.Reader, contentType string) (*http.Response, error) {
+// extraHeaders를 통해 전달된 헤더(Authorization 등)를 그대로 machbase 서버로 전달한다.
+// apiToken이 설정된 경우 Authorization 헤더를 추가한다.
+func (m *Machbase) Forward(ctx context.Context, method, path string, rawQuery string, body io.Reader, contentType string, extraHeaders ...http.Header) (*http.Response, error) {
 	u := m.baseURL.JoinPath(path)
 	u.RawQuery = rawQuery
 
@@ -243,6 +244,14 @@ func (m *Machbase) Forward(ctx context.Context, method, path string, rawQuery st
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
+	for _, h := range extraHeaders {
+		for key, values := range h {
+			for _, v := range values {
+				req.Header.Set(key, v)
+			}
+		}
+	}
+
 	if m.apiToken != "" {
 		req.Header.Set("Authorization", "Bearer "+m.apiToken)
 	}
