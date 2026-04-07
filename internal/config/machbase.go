@@ -7,6 +7,8 @@ type MachbaseConfig struct {
 	Port           int    `yaml:"port"`
 	TimeoutSeconds int    `yaml:"timeout_seconds"`
 	APIToken       string `yaml:"api_token"`
+	User           string `yaml:"user"`
+	Password       string `yaml:"password"`
 }
 
 func (m *MachbaseConfig) ApplyDefaults() {
