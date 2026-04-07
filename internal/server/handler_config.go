@@ -35,6 +35,8 @@ type MachbaseConfigAPI struct {
 	Port           int    `json:"port"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
 	Token          string `json:"token"`
+	User           string `json:"user"`
+	Password       string `json:"password,omitempty"`
 }
 
 type FfmpegConfigAPI struct {
@@ -150,7 +152,8 @@ func cfgToDTO(cfg *config.AppConfig) AppConfigDTO {
 			Host:           cfg.Machbase.Host,
 			Port:           cfg.Machbase.Port,
 			TimeoutSeconds: cfg.Machbase.TimeoutSeconds,
-			Token: cfg.Machbase.APIToken,
+			Token:          cfg.Machbase.APIToken,
+			User:           cfg.Machbase.User,
 		},
 		Ffmpeg: FfmpegConfigAPI{
 			Binary: cfg.FFmpeg.Binary,
@@ -203,6 +206,8 @@ func dtoToCfg(req *AppConfigDTO) config.AppConfig {
 			Port:           req.Machbase.Port,
 			TimeoutSeconds: req.Machbase.TimeoutSeconds,
 			APIToken:       req.Machbase.Token,
+			User:           req.Machbase.User,
+			Password:       req.Machbase.Password,
 		},
 		FFmpeg: config.FFmpegConfig{
 			Binary: req.Ffmpeg.Binary,

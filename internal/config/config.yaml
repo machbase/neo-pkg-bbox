@@ -10,6 +10,8 @@ machbase:
   port: 5654
   timeout_seconds: 30
   api_token: ""
+  user: "sys"
+  password: "manager"
 
 mediamtx:
   binary: "../tools/mediamtx"          # MediaMTX 바이너리 경로 (비어있으면 외부 서버 사용)
