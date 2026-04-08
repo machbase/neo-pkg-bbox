@@ -19,9 +19,6 @@ import (
 	"github.com/machbase/neo-pkg-bbox/internal/logger"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/machbase/neo-pkg-blackbox/internal/db"
-	"github.com/machbase/neo-pkg-blackbox/internal/ffmpeg"
-	"github.com/machbase/neo-pkg-blackbox/internal/logger"
 )
 
 // WatcherRule represents a watcher rule configuration.
