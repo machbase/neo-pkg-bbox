@@ -22,6 +22,8 @@ jobs:
             os: macos-latest
           - target: darwin-arm64
             os: macos-latest
+          - target: windows-amd64
+            os: windows-latest
 
     runs-on: ${{ matrix.os }}
 
@@ -42,7 +44,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: neo-blackbox-${{ matrix.target }}
-          path: dist/neo-blackbox-${{ matrix.target }}.tar.gz
+          path: |
+            dist/neo-blackbox-${{ matrix.target }}.tar.gz
+            dist/neo-blackbox-${{ matrix.target }}.zip
 
   release:
     needs: build
@@ -62,10 +66,10 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
 
-          # Collect all tar.gz files
+          # Collect all archive files (tar.gz for Linux/macOS, zip for Windows)
           FILES=()
-          for f in artifacts/neo-blackbox-*/*.tar.gz; do
-            FILES+=("$f")
+          for f in artifacts/neo-blackbox-*/*.tar.gz artifacts/neo-blackbox-*/*.zip; do
+            [ -e "$f" ] && FILES+=("$f")
           done
 
           gh release create "${TAG}" \
