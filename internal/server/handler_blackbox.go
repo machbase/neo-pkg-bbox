@@ -618,6 +618,14 @@ func (h *Handler) GetCameraEventCount(c *gin.Context) {
 		total += count
 	}
 
+	// 조회 시간 갱신: 다음 count 호출 시 새 이벤트만 카운트
+	h.lastEventQueryTimeMu.Lock()
+	if endNs > h.lastEventQueryTime {
+		h.lastEventQueryTime = endNs
+		h.saveState()
+	}
+	h.lastEventQueryTimeMu.Unlock()
+
 	successResponse(c, tick, map[string]any{
 		"count": total,
 	})
