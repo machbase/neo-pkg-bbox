@@ -1,8 +1,0 @@
-{
-    "mvs_dir": "mvs",
-    "logs_dir": "logs",
-    "models_dir": "models",
-    "server_url": "http://127.0.0.1:8000/api/ai/result",
-    "ffmpeg_path": "../tools/ffmpeg",
-    "run_path": "blackbox-ai-core"
-}

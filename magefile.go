@@ -295,10 +295,14 @@ func Package(target string) error {
 
 		// 파일명 → 복사될 목적 디렉토리 (빈 문자열이면 tools/ 로 이동)
 		aiFileDestDir := map[string]string{
-			"blackbox-ai-manager": aiDestDir,
-			"blackbox-ai-core":    aiDestDir,
-			"config.json":         aiDestDir,
-			"libonnxruntime.so":   aiDestDir,
+			"blackbox-ai-manager":      aiDestDir,
+			"blackbox-ai-core":         aiDestDir,
+			"blackbox-ai-manager.exe":  aiDestDir, // Windows
+			"blackbox-ai-core.exe":     aiDestDir, // Windows
+			"config.json":              aiDestDir,
+			"libonnxruntime.so":        aiDestDir,
+			"libonnxruntime.dylib":     aiDestDir, // macOS
+			"onnxruntime.dll":          aiDestDir, // Windows
 		}
 
 		entries, err := os.ReadDir(toolsSrcDir)
@@ -541,19 +545,54 @@ func createTarGz(sourceDir, targetFile string) error {
 
 // createZip creates a zip archive
 func createZip(sourceDir, targetFile string) error {
-	dir := filepath.Dir(sourceDir)
+	absTarget, err := filepath.Abs(targetFile)
+	if err != nil {
+		return err
+	}
 	base := filepath.Base(sourceDir)
 
-	// Use PowerShell on Windows
-	if runtime.GOOS == "windows" {
-		absSource, _ := filepath.Abs(sourceDir)
-		absTarget, _ := filepath.Abs(targetFile)
-		cmd := fmt.Sprintf("Compress-Archive -Path '%s' -DestinationPath '%s' -Force", absSource, strings.TrimSuffix(absTarget, ".zip"))
-		return sh.RunV("powershell", "-Command", cmd)
+	out, err := os.Create(absTarget)
+	if err != nil {
+		return err
 	}
+	defer out.Close()
 
-	// Use zip command on Unix-like systems
-	return sh.RunV("zip", "-r", targetFile, base, "-C", dir)
+	w := zip.NewWriter(out)
+	defer w.Close()
+
+	return filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(filepath.Dir(sourceDir), path)
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if path != sourceDir {
+				_, err = w.Create(relPath + "/")
+			}
+			return err
+		}
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = relPath
+		header.Method = zip.Deflate
+		_ = base // keep archive rooted at package name
+		writer, err := w.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(writer, f)
+		return err
+	})
 }
 
 // copyDir recursively copies a directory
