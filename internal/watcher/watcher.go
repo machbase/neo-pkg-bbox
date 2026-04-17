@@ -134,8 +134,18 @@ func (ws *WatchSet) Remove(fsw *fsnotify.Watcher, cameraID string) error {
 }
 
 func (ws *WatchSet) GetRule(dir string) (WatcherRule, bool) {
-	rule, ok := ws.dirToRule[dir]
-	return rule, ok
+	// 정확한 매칭 시도
+	if rule, ok := ws.dirToRule[dir]; ok {
+		return rule, true
+	}
+	// Clean 경로로 재시도 (심볼릭 링크, 중복 슬래시 등 대응)
+	cleanDir := filepath.Clean(dir)
+	for watchDir, rule := range ws.dirToRule {
+		if filepath.Clean(watchDir) == cleanDir {
+			return rule, true
+		}
+	}
+	return WatcherRule{}, false
 }
 
 func (w *Watcher) addWatches(fsw *fsnotify.Watcher, rules []WatcherRule) (*WatchSet, error) {
@@ -273,10 +283,37 @@ func (w *Watcher) Run(ctx context.Context) error {
 	w.watchSet = watchSet
 	w.mu.Unlock()
 
+	// 파일 안정성 대기용: Create/Rename 이벤트 후 파일이 완전히 쓰여졌는지 확인
+	// inotify의 IN_CLOSE_WRITE 대응 — 파일 크기가 안정될 때까지 대기
+	pendingFiles := make(map[string]time.Time) // event.Name -> 마지막 이벤트 시간
+	var stabilityTimer *time.Timer
+	var stabilityC <-chan time.Time
+
+	const stabilityDelay = 300 * time.Millisecond // 파일 쓰기 완료 대기 시간
+
+	resetStabilityTimer := func() {
+		if stabilityTimer == nil {
+			stabilityTimer = time.NewTimer(stabilityDelay)
+			stabilityC = stabilityTimer.C
+		} else {
+			if !stabilityTimer.Stop() {
+				select {
+				case <-stabilityTimer.C:
+				default:
+				}
+			}
+			stabilityTimer.Reset(stabilityDelay)
+			stabilityC = stabilityTimer.C
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			watchSet.RemoveAll(fsw)
+			if stabilityTimer != nil {
+				stabilityTimer.Stop()
+			}
 			logger.GetLogger().Info("Stop Watcher")
 			return nil
 
@@ -284,23 +321,52 @@ func (w *Watcher) Run(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			// Create 이벤트만 처리 (IN_MOVED_TO 대응)
-			// fsnotify는 Linux에서 IN_CREATE|IN_MOVED_TO 모두 Create로 매핑
-			if !event.Has(fsnotify.Create) {
+			// Create(파일 생성/이동) 또는 Write(쓰기 완료) 이벤트 감시
+			if !event.Has(fsnotify.Create) && !event.Has(fsnotify.Write) {
 				continue
 			}
+
 			dir := filepath.Dir(event.Name)
-			name := filepath.Base(event.Name)
-
 			w.mu.Lock()
-			rule, ok := watchSet.GetRule(dir)
+			_, ok = watchSet.GetRule(dir)
 			w.mu.Unlock()
-
 			if !ok {
 				continue
 			}
-			if err := w.handleEvent(ctx, name, rule); err != nil {
-				logger.GetLogger().Infof("handleEvent: %v", err)
+
+			// 파일을 pending에 등록하고 안정성 타이머 시작
+			pendingFiles[event.Name] = time.Now()
+			resetStabilityTimer()
+
+		case <-stabilityC:
+			// 안정성 타이머 만료 — pending 파일들 처리
+			now := time.Now()
+			var remaining bool
+			for filePath, lastEvent := range pendingFiles {
+				if now.Sub(lastEvent) < stabilityDelay {
+					remaining = true
+					continue
+				}
+
+				// 파일이 안정됨 — 처리
+				delete(pendingFiles, filePath)
+				dir := filepath.Dir(filePath)
+				name := filepath.Base(filePath)
+
+				w.mu.Lock()
+				rule, ok := watchSet.GetRule(dir)
+				w.mu.Unlock()
+
+				if !ok {
+					continue
+				}
+				if err := w.handleEvent(ctx, name, rule); err != nil {
+					logger.GetLogger().Infof("handleEvent: %v", err)
+				}
+			}
+			// 아직 대기 중인 파일이 있으면 타이머 재시작
+			if remaining {
+				resetStabilityTimer()
 			}
 
 		case err, ok := <-fsw.Errors:
