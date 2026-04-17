@@ -1,36 +1,38 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type AppConfig struct {
-	FFmpeg   FFmpegConfig   `yaml:"ffmpeg"`
-	Server   ServerConfig   `yaml:"server"`
-	Machbase MachbaseConfig `yaml:"machbase"`
-	Mediamtx MediamtxConfig `yaml:"mediamtx"`
-	AI       AIConfig       `yaml:"ai"`
-	Log      LogConfig      `yaml:"log"`
+	FFmpeg   FFmpegConfig   `yaml:"ffmpeg" json:"ffmpeg"`
+	Server   ServerConfig   `yaml:"server" json:"server"`
+	Machbase MachbaseConfig `yaml:"machbase" json:"machbase"`
+	Mediamtx MediamtxConfig `yaml:"mediamtx" json:"mediamtx"`
+	AI       AIConfig       `yaml:"ai" json:"ai"`
+	Log      LogConfig      `yaml:"log" json:"log"`
 }
 
 type LogConfig struct {
-	Dir    string        `yaml:"dir"`    // log directory (all log files go here)
-	Level  string        `yaml:"level"`  // debug, info, warn, error, fatal, panic
-	Format string        `yaml:"format"` // json or text
-	Output string        `yaml:"output"` // stdout, file, both
-	File   LogFileConfig `yaml:"file"`
+	Dir    string        `yaml:"dir" json:"dir"`
+	Level  string        `yaml:"level" json:"level"`
+	Format string        `yaml:"format" json:"format"`
+	Output string        `yaml:"output" json:"output"`
+	File   LogFileConfig `yaml:"file" json:"file"`
 }
 
 type LogFileConfig struct {
-	Filename   string `yaml:"filename"`
-	MaxSize    int    `yaml:"max_size"`    // MB
-	MaxBackups int    `yaml:"max_backups"` // 백업 파일 개수
-	MaxAge     int    `yaml:"max_age"`     // days
-	Compress   bool   `yaml:"compress"`    // 압축 여부
+	Filename   string `yaml:"filename" json:"filename"`
+	MaxSize    int    `yaml:"max_size" json:"max_size"`
+	MaxBackups int    `yaml:"max_backups" json:"max_backups"`
+	MaxAge     int    `yaml:"max_age" json:"max_age"`
+	Compress   bool   `yaml:"compress" json:"compress"`
 }
 
 func Load(path string) (*AppConfig, error) {
@@ -45,7 +47,7 @@ func Load(path string) (*AppConfig, error) {
 	}
 
 	cfg := &AppConfig{}
-	if err := yaml.Unmarshal(bdata, cfg); err != nil {
+	if err := unmarshalByExt(absPath, bdata, cfg); err != nil {
 		return nil, err
 	}
 
@@ -102,24 +104,42 @@ func validate(cfg *AppConfig) error {
 	return nil
 }
 
-// LoadRaw reads config.yaml without applying defaults or resolving relative paths.
+// LoadRaw reads config file without applying defaults or resolving relative paths.
 func LoadRaw(path string) (*AppConfig, error) {
 	bdata, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	cfg := &AppConfig{}
-	if err := yaml.Unmarshal(bdata, cfg); err != nil {
+	if err := unmarshalByExt(path, bdata, cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
-// Save writes the config to the specified path as YAML.
+// Save writes the config to the specified path.
+// JSON or YAML is selected by file extension.
 func Save(path string, cfg *AppConfig) error {
-	bdata, err := yaml.Marshal(cfg)
+	var bdata []byte
+	var err error
+	if isJSON(path) {
+		bdata, err = json.MarshalIndent(cfg, "", "  ")
+	} else {
+		bdata, err = yaml.Marshal(cfg)
+	}
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, bdata, 0644)
+}
+
+func isJSON(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), ".json")
+}
+
+func unmarshalByExt(path string, data []byte, v any) error {
+	if isJSON(path) {
+		return json.Unmarshal(data, v)
+	}
+	return yaml.Unmarshal(data, v)
 }

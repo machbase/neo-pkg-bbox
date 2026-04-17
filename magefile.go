@@ -15,7 +15,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -248,21 +250,10 @@ func Package(target string) error {
 		}
 	}
 
-	// Copy config files
-	configSrcDir := "internal/config"
+	// Create empty config directory (config.yaml is generated via API)
 	configDestDir := filepath.Join(packageDir, "config")
 	if err := os.MkdirAll(configDestDir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-	for _, cfg := range []string{"config.yaml", "test.yaml"} {
-		src := filepath.Join(configSrcDir, cfg)
-		if _, err := os.Stat(src); err == nil {
-			dest := filepath.Join(configDestDir, cfg)
-			fmt.Printf("Copying %s to %s\n", src, dest)
-			if err := sh.Copy(dest, src); err != nil {
-				fmt.Printf("Warning: failed to copy %s: %v\n", cfg, err)
-			}
-		}
 	}
 
 	// Copy web directory → bin/web/ (서버가 실행파일 기준 상대경로로 탐색)
@@ -293,10 +284,14 @@ func Package(target string) error {
 
 		// 파일명 → 복사될 목적 디렉토리 (빈 문자열이면 tools/ 로 이동)
 		aiFileDestDir := map[string]string{
-			"blackbox-ai-manager": aiDestDir,
-			"blackbox-ai-core":    aiDestDir,
-			"config.json":         aiDestDir,
-			"libonnxruntime.so":   aiDestDir,
+			"blackbox-ai-manager":      aiDestDir,
+			"blackbox-ai-core":         aiDestDir,
+			"blackbox-ai-manager.exe":  aiDestDir, // Windows
+			"blackbox-ai-core.exe":     aiDestDir, // Windows
+			"config.json":              aiDestDir,
+			"libonnxruntime.so":        aiDestDir,
+			"libonnxruntime.dylib":     aiDestDir, // macOS
+			"onnxruntime.dll":          aiDestDir, // Windows
 		}
 
 		entries, err := os.ReadDir(toolsSrcDir)
@@ -539,19 +534,56 @@ func createTarGz(sourceDir, targetFile string) error {
 
 // createZip creates a zip archive
 func createZip(sourceDir, targetFile string) error {
-	dir := filepath.Dir(sourceDir)
+	absTarget, err := filepath.Abs(targetFile)
+	if err != nil {
+		return err
+	}
 	base := filepath.Base(sourceDir)
 
-	// Use PowerShell on Windows
-	if runtime.GOOS == "windows" {
-		absSource, _ := filepath.Abs(sourceDir)
-		absTarget, _ := filepath.Abs(targetFile)
-		cmd := fmt.Sprintf("Compress-Archive -Path '%s' -DestinationPath '%s' -Force", absSource, strings.TrimSuffix(absTarget, ".zip"))
-		return sh.RunV("powershell", "-Command", cmd)
+	out, err := os.Create(absTarget)
+	if err != nil {
+		return err
 	}
+	defer out.Close()
 
-	// Use zip command on Unix-like systems
-	return sh.RunV("zip", "-r", targetFile, base, "-C", dir)
+	w := zip.NewWriter(out)
+	defer w.Close()
+
+	return filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(filepath.Dir(sourceDir), path)
+		if err != nil {
+			return err
+		}
+		// zip 표준은 경로 구분자로 슬래시(/)를 사용해야 함
+		relPath = filepath.ToSlash(relPath)
+		if info.IsDir() {
+			if path != sourceDir {
+				_, err = w.Create(relPath + "/")
+			}
+			return err
+		}
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return err
+		}
+		header.Name = relPath
+		header.Method = zip.Deflate
+		_ = base // keep archive rooted at package name
+		writer, err := w.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(writer, f)
+		return err
+	})
 }
 
 // copyDir recursively copies a directory
@@ -808,10 +840,367 @@ func ToolsAI(target string) error {
 		}
 		f.Close()
 		defer os.Remove(tmpFile)
-		return extractZipFlat(tmpFile, destDir)
+		return extractZipFlat(tmpFile, destDir, nil)
 	}
 
-	return extractTarGzStream(resp.Body, destDir)
+	return extractTarGzStream(resp.Body, destDir, nil)
+}
+
+// aiAsset describes a single blackbox-ai release asset parsed from its filename.
+type aiAsset struct {
+	target string // e.g. "linux-amd64"
+	name   string // original asset filename
+	url    string // GitHub API asset URL (for binary download)
+}
+
+// aiAssetRe parses "...-{os}-{arch}.{tar.gz|zip}" suffix.
+var aiAssetRe = regexp.MustCompile(`-([a-z]+)-(amd64|arm64|386|arm)\.(tar\.gz|zip)$`)
+
+// AI downloads the latest blackbox-ai release and extracts only the AI runtime
+// files (blackbox-ai-core, blackbox-ai-manager, libonnxruntime.*, config.json)
+// into tools/{target}/. Targets are discovered from the release assets.
+// 토큰은 GH_TOKEN → GITHUB_TOKEN → .env 순으로 읽습니다.
+// Usage:
+//
+//	mage ai all           # 릴리스에 존재하는 모든 플랫폼
+//	mage ai linux-amd64   # 특정 플랫폼
+func AI(target string) error {
+	token := loadGithubToken()
+
+	tag, assets, err := fetchLatestAIAssets(token)
+	if err != nil {
+		return fmt.Errorf("fetch latest AI release: %w", err)
+	}
+	if len(assets) == 0 {
+		return fmt.Errorf("no blackbox-ai assets found in release %s", tag)
+	}
+	fmt.Printf("Release: %s\n", tag)
+
+	if target == "all" {
+		targetNames := make([]string, 0, len(assets))
+		for _, a := range assets {
+			targetNames = append(targetNames, a.target)
+		}
+		fmt.Printf("Targets: %s\n", strings.Join(targetNames, ", "))
+
+		var failed []string
+		for _, a := range assets {
+			fmt.Printf("\n=== %s ===\n", a.target)
+			if err := extractAIAsset(a, token); err != nil {
+				fmt.Printf("Warning: %s: %v\n", a.target, err)
+				failed = append(failed, a.target)
+			}
+		}
+		if len(failed) > 0 {
+			return fmt.Errorf("failed targets: %s", strings.Join(failed, ", "))
+		}
+		return nil
+	}
+
+	for _, a := range assets {
+		if a.target == target {
+			return extractAIAsset(a, token)
+		}
+	}
+	available := make([]string, 0, len(assets))
+	for _, a := range assets {
+		available = append(available, a.target)
+	}
+	return fmt.Errorf("no asset for target %q in release %s (available: %s)",
+		target, tag, strings.Join(available, ", "))
+}
+
+// loadGithubToken reads a GitHub token from GH_TOKEN, GITHUB_TOKEN, or .env.
+func loadGithubToken() string {
+	if t := os.Getenv("GH_TOKEN"); t != "" {
+		return t
+	}
+	if t := os.Getenv("GITHUB_TOKEN"); t != "" {
+		return t
+	}
+	env, _ := loadEnv()
+	if t := env["GH_TOKEN"]; t != "" {
+		return t
+	}
+	return env["GITHUB_TOKEN"]
+}
+
+// fetchLatestAIAssets returns the tag and all parseable blackbox-ai assets in
+// the latest release of machbase/neo-blackbox-ai.
+func fetchLatestAIAssets(token string) (tagName string, assets []aiAsset, err error) {
+	const owner, repo = "machbase", "neo-blackbox-ai"
+	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", owner, repo)
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", nil, fmt.Errorf("GitHub API returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var rel struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name string `json:"name"`
+			URL  string `json:"url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return "", nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	for _, a := range rel.Assets {
+		if !strings.HasPrefix(a.Name, "blackbox-ai-") {
+			continue
+		}
+		m := aiAssetRe.FindStringSubmatch(a.Name)
+		if len(m) == 0 {
+			continue
+		}
+		assets = append(assets, aiAsset{
+			target: m[1] + "-" + m[2],
+			name:   a.Name,
+			url:    a.URL,
+		})
+	}
+	sort.Slice(assets, func(i, j int) bool { return assets[i].target < assets[j].target })
+	return rel.TagName, assets, nil
+}
+
+// extractAIAsset downloads a single asset and extracts the AI runtime files
+// into tools/{asset.target}/.
+func extractAIAsset(a aiAsset, token string) error {
+	targetOS := strings.SplitN(a.target, "-", 2)[0]
+	destDir := filepath.Join("tools", a.target)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("create tools dir: %w", err)
+	}
+
+	req, err := http.NewRequest("GET", a.url, nil)
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("Accept", "application/octet-stream")
+
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	fmt.Printf("Downloading %s -> %s/\n", a.name, destDir)
+
+	if targetOS == "windows" {
+		if err := os.MkdirAll(tmpDir, 0755); err != nil {
+			return err
+		}
+		tmpFile := filepath.Join(tmpDir, a.name)
+		f, err := os.Create(tmpFile)
+		if err != nil {
+			return fmt.Errorf("create tmp file: %w", err)
+		}
+		if _, err := io.Copy(f, resp.Body); err != nil {
+			f.Close()
+			return fmt.Errorf("write tmp file: %w", err)
+		}
+		f.Close()
+		defer os.Remove(tmpFile)
+		return extractZipFlat(tmpFile, destDir, nil)
+	}
+
+	return extractTarGzStream(resp.Body, destDir, nil)
+}
+
+// isAIFile reports whether the archive entry is one of the AI runtime files
+// we want to keep under tools/{target}/.
+//
+// Matches: blackbox-ai-core[.exe], blackbox-ai-manager[.exe],
+// libonnxruntime.{so,dylib}, onnxruntime.dll (or any filename containing
+// "onnxruntime"), config.json.
+func isAIFile(name string) bool {
+	base := filepath.Base(name)
+	if base == "config.json" {
+		return true
+	}
+	if strings.HasPrefix(base, "blackbox-ai-core") || strings.HasPrefix(base, "blackbox-ai-manager") {
+		return true
+	}
+	if strings.Contains(base, "onnxruntime") {
+		return true
+	}
+	return false
+}
+
+// btbNArchMap maps our target to BtbN FFmpeg-Builds naming.
+var btbNArchMap = map[string]string{
+	"linux-amd64":   "linux64",
+	"linux-arm64":   "linuxarm64",
+	"windows-amd64": "win64",
+	"windows-arm64": "winarm64",
+}
+
+const (
+	ffmpegBtbNVersion = "n8.1"
+	ffmpegBtbNTag     = "8.1"
+)
+
+// FetchFFmpeg downloads static ffmpeg and ffprobe for the specified target.
+// linux/windows: BtbN/FFmpeg-Builds (gpl static build)
+// darwin-arm64: system ffmpeg (brew install ffmpeg)
+// GITHUB_TOKEN 불필요 (public repo 또는 시스템 명령).
+// Usage: mage fetchffmpeg linux-amd64
+func FetchFFmpeg(target string) error {
+	destDir := filepath.Join("tools", target)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return err
+	}
+
+	ffmpegBin := "ffmpeg"
+	if strings.HasPrefix(target, "windows") {
+		ffmpegBin = "ffmpeg.exe"
+	}
+	if _, err := os.Stat(filepath.Join(destDir, ffmpegBin)); err == nil {
+		fmt.Printf("ffmpeg already exists in %s, skipping\n", destDir)
+		return nil
+	}
+
+	if target == "darwin-arm64" {
+		return fetchFFmpegFromSystem(destDir)
+	}
+
+	arch, ok := btbNArchMap[target]
+	if !ok {
+		return fmt.Errorf("FetchFFmpeg: unsupported target %q", target)
+	}
+	return fetchFFmpegBtbN(arch, target, destDir)
+}
+
+// fetchFFmpegFromSystem copies ffmpeg/ffprobe from PATH (darwin-arm64: brew install ffmpeg).
+// macOS에서만 동작합니다. CI에서는 'brew install ffmpeg' 스텝 필요.
+func fetchFFmpegFromSystem(destDir string) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("darwin-arm64 ffmpeg은 macOS에서만 복사 가능합니다 (CI: 'brew install ffmpeg' 스텝 추가 필요)")
+	}
+	for _, bin := range []string{"ffmpeg", "ffprobe"} {
+		src, err := exec.LookPath(bin)
+		if err != nil {
+			return fmt.Errorf("%s not found — install via: brew install ffmpeg", bin)
+		}
+		dest := filepath.Join(destDir, bin)
+		fmt.Printf("Copying %s from %s\n", bin, src)
+		if err := sh.Copy(dest, src); err != nil {
+			return err
+		}
+		if err := os.Chmod(dest, 0755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// fetchFFmpegBtbN downloads ffmpeg/ffprobe from BtbN/FFmpeg-Builds (linux/windows).
+func fetchFFmpegBtbN(btbNArch, target, destDir string) error {
+	isWin := strings.HasPrefix(target, "windows")
+	ext := "tar.xz"
+	if isWin {
+		ext = "zip"
+	}
+	assetName := fmt.Sprintf("ffmpeg-%s-latest-%s-gpl-%s.%s", ffmpegBtbNVersion, btbNArch, ffmpegBtbNTag, ext)
+	assetURL := fmt.Sprintf("https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/%s", assetName)
+
+	fmt.Printf("Downloading %s...\n", assetName)
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		return err
+	}
+	tmpFile := filepath.Join(tmpDir, assetName)
+
+	req, err := http.NewRequest("GET", assetURL, nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("download returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	f, err := os.Create(tmpFile)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		os.Remove(tmpFile)
+		return err
+	}
+	f.Close()
+	defer os.Remove(tmpFile)
+
+	if isWin {
+		return extractZipFlat(tmpFile, destDir, func(name string) bool {
+			b := filepath.Base(name)
+			return b == "ffmpeg.exe" || b == "ffprobe.exe"
+		})
+	}
+
+	// tar.xz: system tar 사용 (xz-utils 필요)
+	extractDir := filepath.Join(tmpDir, "btbn-"+target)
+	if err := os.MkdirAll(extractDir, 0755); err != nil {
+		return err
+	}
+	defer os.RemoveAll(extractDir)
+
+	cmd := exec.Command("tar", "-xJf", tmpFile, "-C", extractDir)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("extract tar.xz: %w", err)
+	}
+
+	for _, bin := range []string{"ffmpeg", "ffprobe"} {
+		matches, _ := filepath.Glob(filepath.Join(extractDir, "*", "bin", bin))
+		if len(matches) == 0 {
+			return fmt.Errorf("%s not found in extracted archive", bin)
+		}
+		dest := filepath.Join(destDir, bin)
+		fmt.Printf("  Extracted: %s\n", bin)
+		if err := sh.Copy(dest, matches[0]); err != nil {
+			return err
+		}
+		if err := os.Chmod(dest, 0755); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // githubReleaseAssetByPattern은 최신 release에서 prefix와 suffix가 모두 일치하는
@@ -865,7 +1254,8 @@ func githubReleaseAssetByPattern(owner, repo, token, prefix, suffix string) (ass
 }
 
 // extractZipFlat extracts a zip archive flat (top-level files only, no dir structure) into destDir.
-func extractZipFlat(zipPath, destDir string) error {
+// If filter is non-nil, only entries whose base name satisfies filter are extracted.
+func extractZipFlat(zipPath, destDir string, filter func(string) bool) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return fmt.Errorf("open zip: %w", err)
@@ -878,6 +1268,9 @@ func extractZipFlat(zipPath, destDir string) error {
 		}
 		name := filepath.Base(f.Name)
 		if name == "" || name == "." {
+			continue
+		}
+		if filter != nil && !filter(name) {
 			continue
 		}
 		destPath := filepath.Join(destDir, name)
@@ -903,7 +1296,8 @@ func extractZipFlat(zipPath, destDir string) error {
 }
 
 // extractTarGzStream은 io.Reader로 받은 tar.gz를 destDir에 flat하게 추출합니다.
-func extractTarGzStream(r io.Reader, destDir string) error {
+// filter가 non-nil이면 base name이 filter를 통과하는 엔트리만 추출합니다.
+func extractTarGzStream(r io.Reader, destDir string, filter func(string) bool) error {
 	gr, err := gzip.NewReader(r)
 	if err != nil {
 		return fmt.Errorf("gzip reader: %w", err)
@@ -925,6 +1319,9 @@ func extractTarGzStream(r io.Reader, destDir string) error {
 
 		name := filepath.Base(hdr.Name)
 		if name == "" || name == "." {
+			continue
+		}
+		if filter != nil && !filter(name) {
 			continue
 		}
 

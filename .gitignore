@@ -6,9 +6,23 @@ tmp
 logs/*
 .md
 ff/*
-# ffmpeg/ffprobe 원본 바이너리 (압축 버전 .gz만 커밋)
+# ffmpeg/ffprobe (mage fetchFFmpeg으로 다운로드)
 tools/*/ffmpeg
+tools/*/ffmpeg.exe
 tools/*/ffprobe
+tools/*/ffprobe.exe
+
+# AI 바이너리 + 모델 (mage ai로 다운로드)
+tools/*/blackbox-ai-core
+tools/*/blackbox-ai-core.exe
+tools/*/blackbox-ai-manager
+tools/*/blackbox-ai-manager.exe
+tools/*/config.json
+tools/*/libonnxruntime.so
+tools/*/libonnxruntime.dylib
+tools/*/onnxruntime.dll
+tools/*/*.onnx
 *.old
 regress/
 mk/
+.vscode/
