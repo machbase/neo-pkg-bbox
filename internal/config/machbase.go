@@ -1,14 +1,14 @@
 package config
 
 type MachbaseConfig struct {
-	Disabled       bool   `yaml:"disabled"`
-	Scheme         string `yaml:"scheme"`
-	Host           string `yaml:"host"`
-	Port           int    `yaml:"port"`
-	TimeoutSeconds int    `yaml:"timeout_seconds"`
-	APIToken       string `yaml:"api_token"`
-	User           string `yaml:"user"`
-	Password       string `yaml:"password"`
+	Disabled       bool   `yaml:"disabled" json:"disabled"`
+	Scheme         string `yaml:"scheme" json:"scheme"`
+	Host           string `yaml:"host" json:"host"`
+	Port           int    `yaml:"port" json:"port"`
+	TimeoutSeconds int    `yaml:"timeout_seconds" json:"timeout_seconds"`
+	APIToken       string `yaml:"api_token" json:"api_token"`
+	User           string `yaml:"user" json:"user"`
+	Password       string `yaml:"password" json:"password"`
 }
 
 func (m *MachbaseConfig) ApplyDefaults() {

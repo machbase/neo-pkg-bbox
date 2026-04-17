@@ -3,13 +3,13 @@ package config
 import "net"
 
 type MediamtxConfig struct {
-	Binary         string `yaml:"binary"`           // MediaMTX 바이너리 경로 (비어있으면 외부 서버 사용)
-	ConfigFile     string `yaml:"config_file"`      // MediaMTX 설정 파일 경로 (비어있으면 바이너리 디렉토리에서 자동 탐색)
-	Host           string `yaml:"host"`             // MediaMTX 내부 API 호스트 (기본: 127.0.0.1)
-	WebRTCHost     string `yaml:"webrtc_host"`      // 프론트에 노출할 WebRTC URL 호스트 (기본: 자동 감지된 서버 IP)
-	Port           int    `yaml:"port"`             // MediaMTX HTTP API 포트 (기본: 9997)
-	WebRTCPort     int    `yaml:"webrtc_port"`      // MediaMTX WebRTC 포트 (기본: 8889)
-	RtspServerPort int    `yaml:"rtsp_server_port"` // MediaMTX RTSP 서버 포트 (기본: 8554)
+	Binary         string `yaml:"binary" json:"binary"`                     // MediaMTX 바이너리 경로 (비어있으면 외부 서버 사용)
+	ConfigFile     string `yaml:"config_file" json:"config_file"`           // MediaMTX 설정 파일 경로 (비어있으면 바이너리 디렉토리에서 자동 탐색)
+	Host           string `yaml:"host" json:"host"`                         // MediaMTX 내부 API 호스트 (기본: 127.0.0.1)
+	WebRTCHost     string `yaml:"webrtc_host" json:"webrtc_host"`           // 프론트에 노출할 WebRTC URL 호스트 (기본: 자동 감지된 서버 IP)
+	Port           int    `yaml:"port" json:"port"`                         // MediaMTX HTTP API 포트 (기본: 9997)
+	WebRTCPort     int    `yaml:"webrtc_port" json:"webrtc_port"`           // MediaMTX WebRTC 포트 (기본: 8889)
+	RtspServerPort int    `yaml:"rtsp_server_port" json:"rtsp_server_port"` // MediaMTX RTSP 서버 포트 (기본: 8554)
 }
 
 // ApplyDefaults sets default values for MediamtxConfig
