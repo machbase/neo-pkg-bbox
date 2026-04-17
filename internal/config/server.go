@@ -6,14 +6,14 @@ import (
 )
 
 type ServerConfig struct {
-	Addr                   string `yaml:"addr"` // e.g. "0.0.0.0:8000"
-	MvsDir                 string `yaml:"mvs_dir"`
-	CameraDir              string `yaml:"camera_dir"`
-	BaseDir                string `yaml:"base_dir"`                 // static root
-	DataDir                string `yaml:"data_dir"`                 // segment root (default: /data)
-	ReadTimeoutSeconds     int    `yaml:"read_timeout_seconds"`     // optional
-	WriteTimeoutSeconds    int    `yaml:"write_timeout_seconds"`    // optional
-	ShutdownTimeoutSeconds int    `yaml:"shutdown_timeout_seconds"` // graceful shutdown timeout
+	Addr                   string `yaml:"addr" json:"addr"` // e.g. "0.0.0.0:8000"
+	MvsDir                 string `yaml:"mvs_dir" json:"mvs_dir"`
+	CameraDir              string `yaml:"camera_dir" json:"camera_dir"`
+	BaseDir                string `yaml:"base_dir" json:"base_dir"`                                 // static root
+	DataDir                string `yaml:"data_dir" json:"data_dir"`                                 // segment root (default: /data)
+	ReadTimeoutSeconds     int    `yaml:"read_timeout_seconds" json:"read_timeout_seconds"`         // optional
+	WriteTimeoutSeconds    int    `yaml:"write_timeout_seconds" json:"write_timeout_seconds"`       // optional
+	ShutdownTimeoutSeconds int    `yaml:"shutdown_timeout_seconds" json:"shutdown_timeout_seconds"` // graceful shutdown timeout
 }
 
 func (c *ServerConfig) ApplyDefaults() {
