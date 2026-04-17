@@ -250,21 +250,10 @@ func Package(target string) error {
 		}
 	}
 
-	// Copy config files
-	configSrcDir := "internal/config"
+	// Create empty config directory (config.yaml is generated via API)
 	configDestDir := filepath.Join(packageDir, "config")
 	if err := os.MkdirAll(configDestDir, 0755); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-	for _, cfg := range []string{"config.yaml", "test.yaml"} {
-		src := filepath.Join(configSrcDir, cfg)
-		if _, err := os.Stat(src); err == nil {
-			dest := filepath.Join(configDestDir, cfg)
-			fmt.Printf("Copying %s to %s\n", src, dest)
-			if err := sh.Copy(dest, src); err != nil {
-				fmt.Printf("Warning: failed to copy %s: %v\n", cfg, err)
-			}
-		}
 	}
 
 	// Copy web directory → bin/web/ (서버가 실행파일 기준 상대경로로 탐색)
@@ -568,6 +557,8 @@ func createZip(sourceDir, targetFile string) error {
 		if err != nil {
 			return err
 		}
+		// zip 표준은 경로 구분자로 슬래시(/)를 사용해야 함
+		relPath = filepath.ToSlash(relPath)
 		if info.IsDir() {
 			if path != sourceDir {
 				_, err = w.Create(relPath + "/")
