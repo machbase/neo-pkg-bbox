@@ -23,6 +23,7 @@ import (
 
 	"github.com/magefile/mage/mg"
 	"github.com/magefile/mage/sh"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -258,12 +259,19 @@ func Package(target string) error {
 	}
 	for _, cfg := range []string{"config.yaml", "test.yaml"} {
 		src := filepath.Join(configSrcDir, cfg)
-		if _, err := os.Stat(src); err == nil {
-			dest := filepath.Join(configDestDir, cfg)
-			fmt.Printf("Copying %s to %s\n", src, dest)
-			if err := sh.Copy(dest, src); err != nil {
-				fmt.Printf("Warning: failed to copy %s: %v\n", cfg, err)
-			}
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		dest := filepath.Join(configDestDir, cfg)
+		fmt.Printf("Copying %s to %s\n", src, dest)
+		if err := sh.Copy(dest, src); err != nil {
+			fmt.Printf("Warning: failed to copy %s: %v\n", cfg, err)
+			continue
+		}
+		jsonDest := filepath.Join(configDestDir, strings.TrimSuffix(cfg, filepath.Ext(cfg))+".json")
+		fmt.Printf("Generating %s from %s\n", jsonDest, src)
+		if err := yamlFileToJSONFile(src, jsonDest); err != nil {
+			fmt.Printf("Warning: failed to generate %s: %v\n", jsonDest, err)
 		}
 	}
 
@@ -295,14 +303,14 @@ func Package(target string) error {
 
 		// 파일명 → 복사될 목적 디렉토리 (빈 문자열이면 tools/ 로 이동)
 		aiFileDestDir := map[string]string{
-			"blackbox-ai-manager":      aiDestDir,
-			"blackbox-ai-core":         aiDestDir,
-			"blackbox-ai-manager.exe":  aiDestDir, // Windows
-			"blackbox-ai-core.exe":     aiDestDir, // Windows
-			"config.json":              aiDestDir,
-			"libonnxruntime.so":        aiDestDir,
-			"libonnxruntime.dylib":     aiDestDir, // macOS
-			"onnxruntime.dll":          aiDestDir, // Windows
+			"blackbox-ai-manager":     aiDestDir,
+			"blackbox-ai-core":        aiDestDir,
+			"blackbox-ai-manager.exe": aiDestDir, // Windows
+			"blackbox-ai-core.exe":    aiDestDir, // Windows
+			"config.json":             aiDestDir,
+			"libonnxruntime.so":       aiDestDir,
+			"libonnxruntime.dylib":    aiDestDir, // macOS
+			"onnxruntime.dll":         aiDestDir, // Windows
 		}
 
 		entries, err := os.ReadDir(toolsSrcDir)
@@ -470,6 +478,53 @@ For more information, see the project documentation.
 
 	fmt.Printf("\n✓ Package created: %s\n", filepath.Join(distDir, archiveName))
 	return nil
+}
+
+// yamlFileToJSONFile reads a YAML file and writes an equivalent JSON file
+// preserving the source document's structure (no typed-struct projection).
+func yamlFileToJSONFile(srcYAML, destJSON string) error {
+	data, err := os.ReadFile(srcYAML)
+	if err != nil {
+		return err
+	}
+	var doc any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("unmarshal yaml: %w", err)
+	}
+	normalized := normalizeYAMLValue(doc)
+	out, err := json.MarshalIndent(normalized, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal json: %w", err)
+	}
+	return os.WriteFile(destJSON, out, 0644)
+}
+
+// normalizeYAMLValue converts yaml.v3 decoded values into JSON-safe Go types.
+// yaml.v3 primarily emits map[string]any, but nested decoders can surface
+// map[interface{}]interface{}; coerce those so encoding/json can handle them.
+func normalizeYAMLValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = normalizeYAMLValue(val)
+		}
+		return out
+	case map[any]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[fmt.Sprintf("%v", k)] = normalizeYAMLValue(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = normalizeYAMLValue(val)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // createTarGz creates a tar.gz archive using Go's native implementation.
