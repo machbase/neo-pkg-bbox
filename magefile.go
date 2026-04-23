@@ -388,6 +388,34 @@ func Package(target string) error {
 		}
 	}
 
+	// macOS: AI 바이너리와 dylib에 ad-hoc 서명.
+	// Apple Silicon은 서명 없거나 깨진 바이너리를 AMFI가 실행 즉시 SIGKILL로 종료함.
+	// tar.gz 추출 과정에서 원본 서명이 유실되므로 패키징 시점에 ad-hoc 서명을 붙여
+	// "서명 있음" 상태를 보장한다. darwin 러너에서만 codesign 사용 가능.
+	if targetOS == "darwin" {
+		aiSignTargets := []string{
+			filepath.Join(packageDir, "ai", "libonnxruntime.dylib"),
+			filepath.Join(packageDir, "ai", "blackbox-ai-core"),
+			filepath.Join(packageDir, "ai", "blackbox-ai-manager"),
+		}
+		if _, err := exec.LookPath("codesign"); err == nil {
+			for _, p := range aiSignTargets {
+				if _, err := os.Stat(p); err != nil {
+					continue
+				}
+				cmd := exec.Command("codesign", "--force", "--deep", "--sign", "-", p)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					return fmt.Errorf("codesign %s: %w", filepath.Base(p), err)
+				}
+				fmt.Printf("codesign ad-hoc %s\n", p)
+			}
+		} else {
+			fmt.Printf("warning: codesign not found in PATH, skipping ad-hoc signing of ai/* (required on macOS for AMFI)\n")
+		}
+	}
+
 	// Copy backend runtime files required by neo package contract.
 	backendDir := filepath.Join(packageDir, ".backend")
 	if err := os.MkdirAll(backendDir, 0755); err != nil {
