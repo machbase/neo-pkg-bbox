@@ -470,22 +470,22 @@ func (h *Handler) CreateTable(c *gin.Context) {
 	tick := time.Now()
 
 	var req struct {
-		TableName string `json:"table_name" binding:"required"`
+		Name string `json:"name" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		errorResponse(c, tick, http.StatusBadRequest, "table_name is required")
+		errorResponse(c, tick, http.StatusBadRequest, "name is required")
 		return
 	}
 
-	if err := h.machbase.CreateTable(c.Request.Context(), req.TableName); err != nil {
-		logger.GetLogger().Errorf("create table %s: %v", req.TableName, err)
+	if err := h.machbase.CreateTable(c.Request.Context(), req.Name); err != nil {
+		logger.GetLogger().Errorf("create table %s: %v", req.Name, err)
 		errorResponse(c, tick, http.StatusInternalServerError, fmt.Sprintf("failed to create table: %v", err))
 		return
 	}
 
 	successResponse(c, tick, map[string]any{
-		"table_name": req.TableName,
-		"created":    true,
+		"name":    req.Name,
+		"created": true,
 	})
 }
 
