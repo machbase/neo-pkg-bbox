@@ -186,6 +186,11 @@ func (h *Handler) CreateCamera(c *gin.Context) {
 	// 신규 카메라는 항상 enabled = true
 	req.Enabled = boolPtr(true)
 
+	// JSON 저장 시 null 대신 빈 배열로 기록되도록 초기화
+	if req.EventRule == nil {
+		req.EventRule = []EventRule{}
+	}
+
 	// Create camera data directories
 	if err := os.MkdirAll(req.OutputDir, 0755); err != nil {
 		logger.GetLogger().Errorf("CreateCamera[%s]: failed to create output directory %q: %v", req.Name, req.OutputDir, err)
