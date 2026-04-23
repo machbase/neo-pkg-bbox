@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,7 +38,35 @@ func (h *Handler) PingIP(c *gin.Context) {
 		return
 	}
 
-	ip := strings.TrimSpace(req.IP)
+	h.doPing(c, tick, req.IP, req.Timeout)
+}
+
+// PingIPQuery handles GET /api/camera/ping?ip=192.168.1.1&timeout=3
+// timeout 기본값 5초, 최대 5초
+func (h *Handler) PingIPQuery(c *gin.Context) {
+	tick := time.Now()
+
+	ip := c.Query("ip")
+	if ip == "" {
+		errorResponse(c, tick, http.StatusBadRequest, "missing required query parameter: ip")
+		return
+	}
+
+	timeout := 0
+	if v := c.Query("timeout"); v != "" {
+		t, err := strconv.Atoi(v)
+		if err != nil {
+			errorResponse(c, tick, http.StatusBadRequest, "invalid timeout: "+err.Error())
+			return
+		}
+		timeout = t
+	}
+
+	h.doPing(c, tick, ip, timeout)
+}
+
+func (h *Handler) doPing(c *gin.Context, tick time.Time, ipRaw string, timeout int) {
+	ip := strings.TrimSpace(ipRaw)
 
 	// IP 유효성 검사 (command injection 방지)
 	if net.ParseIP(ip) == nil {
@@ -45,7 +74,6 @@ func (h *Handler) PingIP(c *gin.Context) {
 		return
 	}
 
-	timeout := req.Timeout
 	if timeout <= 0 || timeout > 5 {
 		timeout = 5
 	}
