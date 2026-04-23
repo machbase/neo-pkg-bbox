@@ -1136,8 +1136,7 @@ const (
 
 // FetchFFmpeg downloads static ffmpeg and ffprobe for the specified target.
 // linux/windows: BtbN/FFmpeg-Builds (gpl static build)
-// darwin-arm64: system ffmpeg (brew install ffmpeg)
-// GITHUB_TOKEN 불필요 (public repo 또는 시스템 명령).
+// darwin-arm64: osxexperts.net (arm64 static build)
 // Usage: mage fetchffmpeg linux-amd64
 func FetchFFmpeg(target string) error {
 	destDir := filepath.Join("tools", target)
@@ -1155,7 +1154,7 @@ func FetchFFmpeg(target string) error {
 	}
 
 	if target == "darwin-arm64" {
-		return fetchFFmpegFromSystem(destDir)
+		return fetchFFmpegOsxExperts(destDir)
 	}
 
 	arch, ok := btbNArchMap[target]
@@ -1165,24 +1164,82 @@ func FetchFFmpeg(target string) error {
 	return fetchFFmpegBtbN(arch, target, destDir)
 }
 
-// fetchFFmpegFromSystem copies ffmpeg/ffprobe from PATH (darwin-arm64: brew install ffmpeg).
-// macOS에서만 동작합니다. CI에서는 'brew install ffmpeg' 스텝 필요.
-func fetchFFmpegFromSystem(destDir string) error {
-	if runtime.GOOS != "darwin" {
-		return fmt.Errorf("darwin-arm64 ffmpeg은 macOS에서만 복사 가능합니다 (CI: 'brew install ffmpeg' 스텝 추가 필요)")
+// fetchFFmpegOsxExperts downloads arm64 static ffmpeg/ffprobe zips from osxexperts.net.
+// BtbN은 macOS 빌드를 제공하지 않고 evermeet.cx는 Intel 전용이라, arm64 정적 빌드는
+// osxexperts.net을 사용합니다. URL 규칙: https://www.osxexperts.net/{bin}{verSlug}arm.zip
+// (verSlug = ffmpegBtbNTag에서 '.' 제거, 예: "8.1" → "81").
+func fetchFFmpegOsxExperts(destDir string) error {
+	verSlug := strings.ReplaceAll(ffmpegBtbNTag, ".", "")
+
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
+		return err
 	}
+
+	client := &http.Client{Timeout: 10 * time.Minute}
 	for _, bin := range []string{"ffmpeg", "ffprobe"} {
-		src, err := exec.LookPath(bin)
+		assetName := fmt.Sprintf("%s%sarm.zip", bin, verSlug)
+		assetURL := fmt.Sprintf("https://www.osxexperts.net/%s", assetName)
+		fmt.Printf("Downloading %s...\n", assetURL)
+
+		req, err := http.NewRequest("GET", assetURL, nil)
 		if err != nil {
-			return fmt.Errorf("%s not found — install via: brew install ffmpeg", bin)
-		}
-		dest := filepath.Join(destDir, bin)
-		fmt.Printf("Copying %s from %s\n", bin, src)
-		if err := sh.Copy(dest, src); err != nil {
 			return err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return fmt.Errorf("download %s returned %d: %s", assetURL, resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+
+		tmpFile := filepath.Join(tmpDir, assetName)
+		f, err := os.Create(tmpFile)
+		if err != nil {
+			resp.Body.Close()
+			return err
+		}
+		if _, err := io.Copy(f, resp.Body); err != nil {
+			f.Close()
+			resp.Body.Close()
+			os.Remove(tmpFile)
+			return err
+		}
+		f.Close()
+		resp.Body.Close()
+
+		wantBin := bin
+		if err := extractZipFlat(tmpFile, destDir, func(name string) bool {
+			return name == wantBin
+		}); err != nil {
+			os.Remove(tmpFile)
+			return fmt.Errorf("extract %s: %w", assetName, err)
+		}
+		os.Remove(tmpFile)
+
+		dest := filepath.Join(destDir, bin)
+		if _, err := os.Stat(dest); err != nil {
+			return fmt.Errorf("%s not found after extracting %s", bin, assetName)
 		}
 		if err := os.Chmod(dest, 0755); err != nil {
 			return err
+		}
+
+		// macOS에서 실행 시 XProtect가 미서명 바이너리를 삭제하는 케이스가 보고됨.
+		// ad-hoc 서명으로 "서명 있음" 상태를 보장. darwin 러너에서만 codesign 사용 가능.
+		if runtime.GOOS == "darwin" {
+			if _, err := exec.LookPath("codesign"); err == nil {
+				cmd := exec.Command("codesign", "--force", "--sign", "-", dest)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					return fmt.Errorf("codesign %s: %w", bin, err)
+				}
+			} else {
+				fmt.Printf("warning: codesign not found in PATH, skipping ad-hoc signing of %s\n", bin)
+			}
 		}
 	}
 	return nil

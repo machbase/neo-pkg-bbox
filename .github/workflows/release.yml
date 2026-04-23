@@ -5,6 +5,7 @@ on:
     tags:
       - "v*"
       - "[0-9]*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -36,10 +37,6 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xz-utils
 
-      - name: Install ffmpeg (macOS)
-        if: runner.os == 'macOS'
-        run: brew install ffmpeg
-
       - name: Fetch AI files
         env:
           GH_TOKEN: ${{ secrets.AI_REPO_TOKEN }}
@@ -62,6 +59,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch'
 
     steps:
       - uses: actions/checkout@v4
