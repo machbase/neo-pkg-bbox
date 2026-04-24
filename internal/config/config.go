@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -53,9 +54,46 @@ func Load(path string) (*AppConfig, error) {
 
 	applyDefaults(cfg)
 	resolveRelativePaths(cfg, filepath.Dir(absPath))
+	resolveExecutableExt(cfg)
 	applyEnvOverrides(cfg)
 
 	return cfg, nil
+}
+
+// resolveExecutableExt는 Windows 에서 실행 파일 경로에 .exe 가 없고,
+// 해당 경로 자체(또는 .gz 압축본)가 존재하지 않으며 .exe 버전이 존재할 때
+// 경로를 .exe 로 보정한다. Windows 릴리스 패키지는 tools/ffmpeg.exe 처럼
+// 접미사가 포함된 이름으로 배포되지만 config.yaml 은 단일 경로를 사용하므로
+// 로드 시점에 한 번 맞춰준다.
+func resolveExecutableExt(cfg *AppConfig) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	cfg.FFmpeg.Binary = preferExe(cfg.FFmpeg.Binary)
+	cfg.FFmpeg.Defaults.ProbeBinary = preferExe(cfg.FFmpeg.Defaults.ProbeBinary)
+	cfg.Mediamtx.Binary = preferExe(cfg.Mediamtx.Binary)
+	cfg.AI.Binary = preferExe(cfg.AI.Binary)
+}
+
+func preferExe(p string) string {
+	if p == "" || strings.HasSuffix(strings.ToLower(p), ".exe") {
+		return p
+	}
+	// path 또는 path.gz 가 이미 있으면 그대로 둔다 (EnsureUnpacked 대상).
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	if _, err := os.Stat(p + ".gz"); err == nil {
+		return p
+	}
+	exe := p + ".exe"
+	if _, err := os.Stat(exe); err == nil {
+		return exe
+	}
+	if _, err := os.Stat(exe + ".gz"); err == nil {
+		return exe
+	}
+	return p
 }
 
 func applyEnvOverrides(cfg *AppConfig) {
