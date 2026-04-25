@@ -26,3 +26,4 @@ tools/*/*.onnx
 regress/
 mk/
 .vscode/
+.claude/

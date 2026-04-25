@@ -100,6 +100,12 @@ install:
     - run: |
         echo "Installing neo-blackbox package..."
         chmod +x ./.backend/start.sh ./.backend/stop.sh
+        # macOS: 브라우저로 tar.gz 받은 경우 quarantine 속성이 번들 전체에 상속되어
+        # 실행 시 Gatekeeper/XProtect가 미서명 바이너리(ffmpeg, ai manager 등)를
+        # 차단/삭제함. 설치 시점에 한 번 제거.
+        if [ "$(uname)" = "Darwin" ]; then
+          xattr -dr com.apple.quarantine ./tools ./bin ./ai 2>/dev/null || true
+        fi
 
 uninstall:
   scripts:

@@ -129,6 +129,7 @@ func (s *Server) routes(serveWeb bool) {
 	// ==================================================================
 	// Network utilities
 	api.POST("/cameras/ping", s.handler.PingIP)
+	api.GET("/camera/ping", s.handler.PingIPQuery)
 
 	// ==================================================================
 	// AI
