@@ -780,14 +780,8 @@ func Dp(target string) error {
 	fmt.Println("Please enter password when prompted...")
 	fmt.Println()
 
-	// Run scp command (interactive for password)
-	cmd := exec.Command("scp", archivePath, remoteTarget)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to scp: %w", err)
+	if err := runScp(archivePath, remoteTarget); err != nil {
+		return err
 	}
 
 	fmt.Printf("\n✓ Deployed successfully to %s\n", remoteTarget)
@@ -834,17 +828,27 @@ func DpG4u(target string) error {
 	fmt.Println("Please enter password when prompted...")
 	fmt.Println()
 
-	// Run scp command (interactive for password)
+	if err := runScp(archivePath, remoteTarget); err != nil {
+		return err
+	}
+
+	fmt.Printf("\n✓ Deployed successfully to %s\n", remoteTarget)
+	return nil
+}
+
+// runScp 는 scp 명령을 실행한다. Windows 에는 기본 scp 가 없을 수 있어
+// LookPath 로 존재 여부를 먼저 확인한 뒤 친절한 오류를 돌려준다.
+func runScp(archivePath, remoteTarget string) error {
+	if _, err := exec.LookPath("scp"); err != nil {
+		return fmt.Errorf("scp 명령을 찾을 수 없습니다 (Windows 의 경우 OpenSSH Client 기능을 설치하거나 WSL 에서 실행하세요): %w", err)
+	}
 	cmd := exec.Command("scp", archivePath, remoteTarget)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to scp: %w", err)
 	}
-
-	fmt.Printf("\n✓ Deployed successfully to %s\n", remoteTarget)
 	return nil
 }
 
@@ -1330,6 +1334,9 @@ func fetchFFmpegBtbN(btbNArch, target, destDir string) error {
 	}
 	defer os.RemoveAll(extractDir)
 
+	if _, err := exec.LookPath("tar"); err != nil {
+		return fmt.Errorf("tar 명령을 찾을 수 없습니다 (tar.xz 압축 해제에는 xz-utils 가 포함된 tar 가 필요합니다): %w", err)
+	}
 	cmd := exec.Command("tar", "-xJf", tmpFile, "-C", extractDir)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

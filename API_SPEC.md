@@ -514,6 +514,55 @@ Response:
 
 ---
 
+## POST /api/cameras/ping
+
+지정한 IP 주소로 ICMP 핑 수행 (카메라 연결성 확인 용도)
+
+Request:
+```json
+{
+    "ip": "192.168.1.141",                // required - 대상 IPv4/IPv6 주소
+                                          // (IP 형식이 아니면 400 반환, command injection 방지)
+    "timeout": 3                          // int - 대기시간(초)
+                                          // 범위: 1~5, 기본값: 5, 그 외 값은 5로 보정
+}
+```
+
+Response:
+```json
+{
+    "ip": "192.168.1.141",                // 대상 IP
+    "alive": true,                        // bool - 응답 성공 여부
+    "latency": "12.345ms",                // time.Duration 문자열 (alive=true 일 때)
+    "output": "string",                   // ping 명령 표준출력/에러 (trim 처리)
+    "error": "string"                     // alive=false 일 때 에러 메시지
+}
+```
+
+Note:
+- 서버 호스트의 `ping` 명령을 실행 (OS별 옵션 자동 분기: Windows `-n 1 -w <ms>`, macOS `-c 1 -W <ms>`, Linux `-c 1 -W <sec>`)
+- 요청 컨텍스트 타임아웃도 동일하게 `timeout` 초로 설정
+- IP는 `net.ParseIP`로 검증, 통과하지 못하면 400
+
+---
+
+## GET /api/camera/ping
+
+`POST /api/cameras/ping` 과 동일 동작. 쿼리스트링 방식.
+
+Query Parameters:
+- `ip`: required - 대상 IPv4/IPv6 주소
+- `timeout`: optional - 대기시간(초), 범위 1~5, 기본값 5
+
+Example:
+```
+GET /api/camera/ping?ip=192.168.1.141&timeout=3
+```
+
+Response: `POST /api/cameras/ping` 과 동일
+
+---
+
 ## POST /api/ai/result
 
 AI 감지 결과 업로드 ({camera}_log 테이블에 저장)

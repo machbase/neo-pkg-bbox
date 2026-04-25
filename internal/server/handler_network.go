@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -82,8 +83,7 @@ func (h *Handler) doPing(c *gin.Context, tick time.Time, ipRaw string, timeout i
 	defer cancel()
 
 	start := time.Now()
-	// -c 1: 1회, -W: 대기시간(초)
-	cmd := exec.CommandContext(ctx, "ping", "-c", "1", "-W", fmt.Sprintf("%d", timeout), ip)
+	cmd := buildPingCommand(ctx, ip, timeout)
 	output, err := cmd.CombinedOutput()
 	elapsed := time.Since(start)
 
@@ -101,4 +101,21 @@ func (h *Handler) doPing(c *gin.Context, tick time.Time, ipRaw string, timeout i
 	}
 
 	successResponse(c, tick, result)
+}
+
+// buildPingCommand: OS별 ping 옵션 차이를 흡수
+//   - Windows : -n <count> -w <timeout(ms)>
+//   - macOS   : -c <count> -W <timeout(ms)>
+//   - Linux 등: -c <count> -W <timeout(s)>
+func buildPingCommand(ctx context.Context, ip string, timeoutSec int) *exec.Cmd {
+	switch runtime.GOOS {
+	case "windows":
+		ms := strconv.Itoa(timeoutSec * 1000)
+		return exec.CommandContext(ctx, "ping", "-n", "1", "-w", ms, ip)
+	case "darwin":
+		ms := strconv.Itoa(timeoutSec * 1000)
+		return exec.CommandContext(ctx, "ping", "-c", "1", "-W", ms, ip)
+	default:
+		return exec.CommandContext(ctx, "ping", "-c", "1", "-W", strconv.Itoa(timeoutSec), ip)
+	}
 }

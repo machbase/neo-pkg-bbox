@@ -21,7 +21,7 @@ func (c *ServerConfig) ApplyDefaults() {
 		c.Addr = "0.0.0.0:8000"
 	}
 	if c.DataDir == "" {
-		c.DataDir = "/data"
+		c.DataDir = DefaultDataDir()
 	}
 	if c.ShutdownTimeoutSeconds == 0 {
 		c.ShutdownTimeoutSeconds = 10

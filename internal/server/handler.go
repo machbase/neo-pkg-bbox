@@ -98,10 +98,10 @@ type Watcher interface {
 // NewHandler creates a new Handler.
 func NewHandler(machbase *db.Machbase, watcher Watcher, ffRunner *ffmpeg.FFmpegRunner, dataDir, logDir, mvsDir, cameraDir, ffmpegBinary, configPath string, mediamtxHost string, mediamtxWebRTCHost string, mediamtxPort int, mediamtxWebRTCPort int, mediamtxRtspServerPort int) *Handler {
 	if dataDir == "" {
-		dataDir = "/data"
+		dataDir = config.DefaultDataDir()
 	}
 	if logDir == "" {
-		logDir = "/var/log/blackbox"
+		logDir = config.DefaultLogDir()
 	}
 	mediamtxCfg := config.MediamtxConfig{Host: mediamtxHost, WebRTCHost: mediamtxWebRTCHost, Port: mediamtxPort, WebRTCPort: mediamtxWebRTCPort, RtspServerPort: mediamtxRtspServerPort}
 	mediamtxCfg.ApplyDefaults()
