@@ -392,6 +392,45 @@ func (m *Machbase) ChunkRecordForTime(ctx context.Context, tableName string, cam
 	}, nil
 }
 
+// NextChunkRecordAfterTime fetches the first chunk that starts after the given time.
+func (m *Machbase) NextChunkRecordAfterTime(ctx context.Context, tableName string, cameraID string, ts time.Time) (*ChunkRecord, error) {
+	safeTable := escapeSQLLiteral(tableName)
+	safeCameraID := escapeSQLLiteral(cameraID)
+	tsNs := ts.UnixNano()
+
+	const msBuffer int64 = 1_000_000 // avoid treating a boundary-adjusted current chunk as a future chunk
+	sql := fmt.Sprintf(
+		"select /*+ SCAN_FORWARD(%s) */ time, value, chunk_path from %s "+
+			"where name = '%s' and time > %d "+
+			"order by time asc limit 1",
+		safeTable, safeTable, safeCameraID, tsNs+msBuffer,
+	)
+
+	resp, err := m.Query(ctx, sql, WithTimeformat("ns"))
+	if err != nil {
+		return nil, err
+	}
+
+	var rows []struct {
+		Time      int64   `json:"TIME"`
+		Value     float64 `json:"VALUE"`
+		ChunkPath string  `json:"CHUNK_PATH"`
+	}
+	if err := json.Unmarshal(resp.Data.Rows, &rows); err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	row := rows[0]
+	return &ChunkRecord{
+		ChunkPath: row.ChunkPath,
+		EntryTime: time.Unix(0, row.Time),
+		Length:    row.Value,
+	}, nil
+}
+
 // RollupRow represents a rollup row.
 type RollupRow struct {
 	Time      time.Time

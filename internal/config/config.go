@@ -12,12 +12,14 @@ import (
 )
 
 type AppConfig struct {
-	FFmpeg   FFmpegConfig   `yaml:"ffmpeg" json:"ffmpeg"`
-	Server   ServerConfig   `yaml:"server" json:"server"`
-	Machbase MachbaseConfig `yaml:"machbase" json:"machbase"`
-	Mediamtx MediamtxConfig `yaml:"mediamtx" json:"mediamtx"`
-	AI       AIConfig       `yaml:"ai" json:"ai"`
-	Log      LogConfig      `yaml:"log" json:"log"`
+	FFmpeg    FFmpegConfig    `yaml:"ffmpeg" json:"ffmpeg"`
+	Server    ServerConfig    `yaml:"server" json:"server"`
+	Machbase  MachbaseConfig  `yaml:"machbase" json:"machbase"`
+	Mediamtx  MediamtxConfig  `yaml:"mediamtx" json:"mediamtx"`
+	AI        AIConfig        `yaml:"ai" json:"ai"`
+	Log       LogConfig       `yaml:"log" json:"log"`
+	Retention RetentionConfig `yaml:"retention" json:"retention"`
+	Event     EventConfig     `yaml:"event" json:"event"`
 }
 
 type LogConfig struct {
@@ -136,6 +138,8 @@ func resolveRelativePaths(cfg *AppConfig, base string) {
 
 func applyDefaults(cfg *AppConfig) {
 	cfg.Mediamtx.ApplyDefaults()
+	cfg.Retention.ApplyDefaults()
+	cfg.Event.ApplyDefaults()
 }
 
 func validate(cfg *AppConfig) error {

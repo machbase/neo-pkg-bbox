@@ -58,35 +58,47 @@ type cameraProcess struct {
 
 // Handler handles API requests.
 type Handler struct {
-	machbase             *db.Machbase
-	watcher              Watcher // watcher interface for dynamic watch management
-	configPath           string  // absolute path to config.yaml (for GET/POST /api/config)
-	dataDir              string
-	logDir               string // log directory (ffmpeg logs etc.)
-	mvsDir               string
-	cameraDir            string
-	ffmpegBinary         string
-	ffRunner             *ffmpeg.FFmpegRunner
+	machbase               *db.Machbase
+	watcher                Watcher // watcher interface for dynamic watch management
+	configPath             string  // absolute path to config.yaml (for GET/POST /api/config)
+	dataDir                string
+	logDir                 string // log directory (ffmpeg logs etc.)
+	mvsDir                 string
+	cameraDir              string
+	ffmpegBinary           string
+	ffRunner               *ffmpeg.FFmpegRunner
 	mediamtxClient         *mediamtx.Client // MediaMTX HTTP API 클라이언트
 	mediamtxHost           string           // MediaMTX 내부 API 호스트 (heartbeat용)
 	mediamtxWebRTCHost     string           // 프론트에 노출할 WebRTC URL 호스트 (실제 서버 IP)
 	mediamtxPort           int              // MediaMTX HTTP API 포트 (heartbeat용)
 	mediamtxWebRTCPort     int              // MediaMTX WebRTC 포트 (webrtc_url 생성용)
 	mediamtxRtspServerPort int              // MediaMTX RTSP 서버 포트 (ffmpeg용, 기본: 8554)
-	prefixCache          map[string]string
-	fpsCache             map[string]*int
-	cacheMu              sync.RWMutex
-	processes            map[string]*cameraProcess
-	processMu            sync.Mutex
-	edgeState            map[string]bool // EDGE_ONLY 이전 상태: "camera_id.rule_id" → prev_result
-	edgeMu               sync.Mutex
-	cameraConfigs        map[string]*CameraCreateRequest // camera_id → full camera config 캐시
-	configMu             sync.RWMutex
-	detectObjects        []string // 감지 가능한 객체 목록 캐시
-	detectObjectMu       sync.RWMutex
-	lastEventQueryTime   int64 // 마지막 이벤트 조회 시간 (nanoseconds)
-	lastEventQueryTimeMu sync.Mutex
-	stateFilePath        string // {dataDir}/state.json 경로
+	prefixCache            map[string]string
+	fpsCache               map[string]*int
+	cacheMu                sync.RWMutex
+	processes              map[string]*cameraProcess
+	processMu              sync.Mutex
+	edgeState              map[string]bool // EDGE_ONLY 이전 상태: "camera_id.rule_id" → prev_result
+	edgeMu                 sync.Mutex
+	cameraConfigs          map[string]*CameraCreateRequest // camera_id → full camera config 캐시
+	configMu               sync.RWMutex
+	detectObjects          []string // 감지 가능한 객체 목록 캐시
+	detectObjectMu         sync.RWMutex
+	lastEventQueryTime     int64 // 마지막 이벤트 조회 시간 (nanoseconds)
+	lastEventQueryTimeMu   sync.Mutex
+	stateFilePath          string // {dataDir}/state.json 경로
+	stateMu                sync.Mutex
+	deletedCameras         map[string]deletedCameraState
+	retentionMu            sync.Mutex
+	retentionRunning       bool
+	lastRetentionResult    *RetentionRunResult
+	eventCfg               config.EventConfig
+	videoEventQueues       map[string]chan queuedVideoEvent
+	videoEventQueueMu      sync.Mutex
+	videoQueueDropMu       sync.Mutex
+	videoQueueDropStats    map[string]queueFullLogState
+	eventQueueCtx          context.Context
+	eventQueueCancel       context.CancelFunc
 }
 
 // Watcher interface for adding/removing file system watches dynamically
@@ -96,13 +108,14 @@ type Watcher interface {
 }
 
 // NewHandler creates a new Handler.
-func NewHandler(machbase *db.Machbase, watcher Watcher, ffRunner *ffmpeg.FFmpegRunner, dataDir, logDir, mvsDir, cameraDir, ffmpegBinary, configPath string, mediamtxHost string, mediamtxWebRTCHost string, mediamtxPort int, mediamtxWebRTCPort int, mediamtxRtspServerPort int) *Handler {
+func NewHandler(machbase *db.Machbase, watcher Watcher, ffRunner *ffmpeg.FFmpegRunner, dataDir, logDir, mvsDir, cameraDir, ffmpegBinary, configPath string, eventCfg config.EventConfig, mediamtxHost string, mediamtxWebRTCHost string, mediamtxPort int, mediamtxWebRTCPort int, mediamtxRtspServerPort int) *Handler {
 	if dataDir == "" {
 		dataDir = config.DefaultDataDir()
 	}
 	if logDir == "" {
 		logDir = config.DefaultLogDir()
 	}
+	eventCfg.ApplyDefaults()
 	mediamtxCfg := config.MediamtxConfig{Host: mediamtxHost, WebRTCHost: mediamtxWebRTCHost, Port: mediamtxPort, WebRTCPort: mediamtxWebRTCPort, RtspServerPort: mediamtxRtspServerPort}
 	mediamtxCfg.ApplyDefaults()
 	h := &Handler{
@@ -121,13 +134,18 @@ func NewHandler(machbase *db.Machbase, watcher Watcher, ffRunner *ffmpeg.FFmpegR
 		mediamtxPort:           mediamtxCfg.Port,
 		mediamtxWebRTCPort:     mediamtxCfg.WebRTCPort,
 		mediamtxRtspServerPort: mediamtxCfg.RtspServerPort,
-		prefixCache:    make(map[string]string),
-		fpsCache:       make(map[string]*int),
-		processes:      make(map[string]*cameraProcess),
-		edgeState:      make(map[string]bool),
-		cameraConfigs:  make(map[string]*CameraCreateRequest),
+		prefixCache:            make(map[string]string),
+		fpsCache:               make(map[string]*int),
+		processes:              make(map[string]*cameraProcess),
+		edgeState:              make(map[string]bool),
+		cameraConfigs:          make(map[string]*CameraCreateRequest),
+		deletedCameras:         make(map[string]deletedCameraState),
+		eventCfg:               eventCfg,
+		videoEventQueues:       make(map[string]chan queuedVideoEvent),
+		videoQueueDropStats:    make(map[string]queueFullLogState),
 	}
 	h.stateFilePath = filepath.Join(dataDir, "state.json")
+	h.startEventQueue()
 	h.loadState()
 	h.loadAllCameraConfigs()
 
@@ -150,7 +168,8 @@ func NewHandler(machbase *db.Machbase, watcher Watcher, ffRunner *ffmpeg.FFmpegR
 
 // serverState represents the persistent state saved to state.json.
 type serverState struct {
-	LastEventQueryTime int64 `json:"last_event_query_time"`
+	LastEventQueryTime int64                         `json:"last_event_query_time"`
+	DeletedCameras     map[string]deletedCameraState `json:"deleted_cameras,omitempty"`
 }
 
 // loadState reads state.json and restores lastEventQueryTime.
@@ -168,15 +187,31 @@ func (h *Handler) loadState() {
 		return
 	}
 	h.lastEventQueryTime = s.LastEventQueryTime
+	if s.DeletedCameras != nil {
+		h.deletedCameras = s.DeletedCameras
+	}
 	logger.GetLogger().Infof("loadState: restored lastEventQueryTime=%d", s.LastEventQueryTime)
 }
 
 // saveState writes current lastEventQueryTime to state.json.
 func (h *Handler) saveState() {
-	s := serverState{LastEventQueryTime: h.lastEventQueryTime}
+	h.stateMu.Lock()
+	defer h.stateMu.Unlock()
+	h.saveStateLocked()
+}
+
+func (h *Handler) saveStateLocked() {
+	s := serverState{
+		LastEventQueryTime: h.lastEventQueryTime,
+		DeletedCameras:     h.deletedCameras,
+	}
 	data, err := json.Marshal(s)
 	if err != nil {
 		logger.GetLogger().Errorf("saveState: failed to marshal: %v", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(h.stateFilePath), 0755); err != nil {
+		logger.GetLogger().Errorf("saveState: failed to create state dir: %v", err)
 		return
 	}
 	if err := os.WriteFile(h.stateFilePath, data, 0644); err != nil {
@@ -309,8 +344,36 @@ func (h *Handler) removeMvsFiles(cameraID string) {
 	}
 }
 
+func resolveCameraStorageDir(dataDir, cameraID, configured, defaultLeaf string) string {
+	if strings.TrimSpace(configured) == "" {
+		return filepath.Clean(filepath.Join(dataDir, cameraID, defaultLeaf))
+	}
+	if filepath.IsAbs(configured) {
+		return filepath.Clean(configured)
+	}
+	return filepath.Clean(filepath.Join(dataDir, configured))
+}
+
+func (h *Handler) resolveCameraStorageDirs(cameraID string, config *CameraCreateRequest) (string, string) {
+	if config == nil {
+		config = h.getCameraConfig(cameraID)
+	}
+
+	if config == nil {
+		return resolveCameraStorageDir(h.dataDir, cameraID, "", "in"),
+			resolveCameraStorageDir(h.dataDir, cameraID, "", "out")
+	}
+
+	return resolveCameraStorageDir(h.dataDir, cameraID, config.OutputDir, "in"),
+		resolveCameraStorageDir(h.dataDir, cameraID, config.ArchiveDir, "out")
+}
+
 // Shutdown stops all running ffmpeg processes.
 func (h *Handler) Shutdown() {
+	if h.eventQueueCancel != nil {
+		h.eventQueueCancel()
+	}
+
 	h.processMu.Lock()
 	procs := make(map[string]*cameraProcess, len(h.processes))
 	for k, v := range h.processes {
@@ -460,13 +523,10 @@ func (h *Handler) getCameraFPS(c *gin.Context, camera string) *int {
 }
 
 // resolveArchiveDir returns the archive directory for a camera.
-// Uses camera config's archive_dir if set (absolute path), otherwise defaults to {dataDir}/{camera}/out.
+// Relative archive_dir values are resolved under dataDir; empty values default to {dataDir}/{camera}/out.
 func (h *Handler) resolveArchiveDir(cameraID string) string {
-	config := h.getCameraConfig(cameraID)
-	if config != nil && config.ArchiveDir != "" && filepath.IsAbs(config.ArchiveDir) {
-		return config.ArchiveDir
-	}
-	return filepath.Join(h.dataDir, cameraID, "out")
+	_, archiveDir := h.resolveCameraStorageDirs(cameraID, nil)
+	return archiveDir
 }
 
 // initPath returns the path to the init segment.
@@ -480,7 +540,7 @@ func (h *Handler) chunkPath(c *gin.Context, camera string, chunkNumber int64) st
 	t := time.UnixMilli(chunkNumber).UTC()
 	dateDir := t.Format("20060102")
 	filename := prefix + "0-" + time.UnixMilli(chunkNumber).UTC().Format("20060202150405") + ".m4s"
-	return filepath.Join(h.dataDir, camera, "out", dateDir, filename)
+	return filepath.Join(h.resolveArchiveDir(camera), dateDir, filename)
 }
 
 // readChunkFile reads a chunk file.

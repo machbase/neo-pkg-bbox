@@ -50,3 +50,27 @@ log:
     max_backups: 10    # 백업 파일 개수
     max_age: 30        # days
     compress: true     # 압축 여부
+
+# 데이터 보존 설정
+# keep_hours 는 보존 기간입니다. 프론트엔드는 일 단위 입력도 시간으로 환산해서 저장합니다.
+# start_at_utc 는 프로그램 기동 후 최초 retention 작업을 시작할 UTC 기준 시각입니다.
+# interval_hours 는 최초 실행 이후 반복 실행 주기입니다. 0이면 24시간 주기로 실행합니다.
+# consistency_cleanup 은 retention 실행 마지막에 DB row 없는 오래된 영상 파일을 정리합니다.
+retention:
+  enabled: false
+  keep_hours: 720
+  start_at_utc: "18:00"
+  interval_hours: 0
+  consistency_cleanup: true
+  targets:
+    database: true
+    files: true
+
+# 이벤트 저장 정책
+# require_video 가 true 이면 event rule 결과는 해당 시각의 영상 chunk row와 파일이 확인된 뒤 저장합니다.
+# video_retry_initial_seconds 부터 시작해서 재시도 간격을 1초씩 늘리고 video_retry_max_seconds 에서 고정합니다.
+event:
+  require_video: true
+  video_wait_seconds: 120
+  video_retry_initial_seconds: 1
+  video_retry_max_seconds: 5

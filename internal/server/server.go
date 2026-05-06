@@ -29,8 +29,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 // New creates a new Server.
-func New(cfg config.ServerConfig, mediamtxCfg config.MediamtxConfig, logDir string, machbase *db.Machbase, watcher Watcher, ffRunner *ffmpeg.FFmpegRunner, ffmpegBinary string, configPath string, serveWeb bool) (*Server, error) {
+func New(cfg config.ServerConfig, mediamtxCfg config.MediamtxConfig, eventCfg config.EventConfig, logDir string, machbase *db.Machbase, watcher Watcher, ffRunner *ffmpeg.FFmpegRunner, ffmpegBinary string, configPath string, serveWeb bool) (*Server, error) {
 	cfg.ApplyDefaults()
+	eventCfg.ApplyDefaults()
 
 	if cfg.BaseDir == "" {
 		exe, err := os.Executable()
@@ -49,7 +50,7 @@ func New(cfg config.ServerConfig, mediamtxCfg config.MediamtxConfig, logDir stri
 	s := &Server{
 		cfg:     cfg,
 		engine:  engine,
-		handler: NewHandler(machbase, watcher, ffRunner, cfg.DataDir, logDir, cfg.MvsDir, cfg.CameraDir, ffmpegBinary, configPath, mediamtxCfg.Host, mediamtxCfg.WebRTCHost, mediamtxCfg.Port, mediamtxCfg.WebRTCPort, mediamtxCfg.RtspServerPort),
+		handler: NewHandler(machbase, watcher, ffRunner, cfg.DataDir, logDir, cfg.MvsDir, cfg.CameraDir, ffmpegBinary, configPath, eventCfg, mediamtxCfg.Host, mediamtxCfg.WebRTCHost, mediamtxCfg.Port, mediamtxCfg.WebRTCPort, mediamtxCfg.RtspServerPort),
 	}
 	s.routes(serveWeb)
 
@@ -72,6 +73,8 @@ func (s *Server) routes(serveWeb bool) {
 	// App Config (server, machbase, ffmpeg.binary)
 	api.GET("/config", s.handler.GetAppConfig)
 	api.POST("/config", s.handler.PostAppConfig)
+	api.GET("/retention/status", s.handler.GetRetentionStatus)
+	api.POST("/retention/run", s.handler.PostRetentionRun)
 
 	// ==================================================================
 	// 목록
@@ -168,6 +171,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.handler.startupCamerasAsync(ctx)
 	// 테이블 삭제 감지 → 고아 카메라 설정파일 자동 제거 (60초 주기)
 	go s.handler.startOrphanWatcher(ctx)
+	go s.handler.startRetentionScheduler(ctx)
 
 	errCh := make(chan error, 1)
 	go func() {
