@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/machbase/neo-pkg-bbox/internal/db"
 	"github.com/machbase/neo-pkg-bbox/internal/dsl"
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -425,12 +427,13 @@ func (h *Handler) UploadAIResult(c *gin.Context) {
 	}
 	tsNano := req.Timestamp * 1000000 // milliseconds to nanoseconds
 
-	config := h.getCameraConfig(req.CameraID)
-	if config == nil {
+	cameraConfig := h.getCameraConfig(req.CameraID)
+	if cameraConfig == nil {
 		logger.GetLogger().Errorf("UploadAIResult: camera config not found for camera_id=%q", req.CameraID)
 		errorResponse(c, tick, http.StatusNotFound, fmt.Sprintf("camera config not found: %q", req.CameraID))
 		return
 	}
+	configSnapshot := cloneCameraConfig(cameraConfig)
 
 	// Detections map의 key를 소문자로 변환 (DSL과 일관성 유지)
 	normalizedDetections := make(map[string]float64, len(req.Detections))
@@ -439,7 +442,7 @@ func (h *Handler) UploadAIResult(c *gin.Context) {
 	}
 
 	// 1) OR_LOG: SaveObjects가 true일 때만 detections → {table}_log 테이블에 저장
-	if config.SaveObjects {
+	if configSnapshot.SaveObjects {
 		logs := make([]db.CameraLogRow, 0, len(normalizedDetections))
 		for ident, value := range normalizedDetections {
 			logs = append(logs, db.CameraLogRow{
@@ -452,14 +455,22 @@ func (h *Handler) UploadAIResult(c *gin.Context) {
 			})
 		}
 
-		if err := h.machbase.InsertCameraLogs(c.Request.Context(), config.Table+"_log", logs); err != nil {
+		if err := h.machbase.InsertCameraLogs(c.Request.Context(), configSnapshot.Table+"_log", logs); err != nil {
 			errorResponse(c, tick, http.StatusInternalServerError, "failed to insert camera logs")
 			return
 		}
 	}
 
-	// 2) EventLog: 캐시된 event rules로 DSL 평가 → {table}_event 저장
-	_ = h.evaluateEventRules(c.Request.Context(), config.Table, config.Name, tsNano, normalizedDetections, config.EventRule)
+	// 2) EventLog: 캐시된 event rules로 DSL 평가 → 영상 chunk 확인 후 {table}_event 저장
+	eventRows := h.buildEventRows(configSnapshot.Table, configSnapshot.Name, tsNano, normalizedDetections, configSnapshot.EventRule)
+	if eventRows.len() > 0 {
+		if h.eventCfg.RequireVideoEnabled() {
+			h.enqueueVideoEvents(configSnapshot, tsNano, eventRows.allMatches, eventQueueModeAllMatches)
+			h.enqueueVideoEvents(configSnapshot, tsNano, eventRows.edgeOrOther, eventQueueModeEdgeOnly)
+		} else {
+			_ = h.insertCameraEvents(c.Request.Context(), configSnapshot.Table, configSnapshot.Name, eventRows.all())
+		}
+	}
 
 	successResponse(c, tick, nil)
 }
@@ -489,15 +500,35 @@ func (h *Handler) CreateTable(c *gin.Context) {
 	})
 }
 
-// evaluateEventRules evaluates all enabled event rules against detection counts.
-// Returns the number of event rows inserted.
-func (h *Handler) evaluateEventRules(ctx context.Context, tableName string, cameraID string, tsNano int64, counts map[string]float64, rules []EventRule) int {
+type eventRowsByMode struct {
+	allMatches  []db.CameraEventRow
+	edgeOrOther []db.CameraEventRow
+}
+
+func (r eventRowsByMode) len() int {
+	return len(r.allMatches) + len(r.edgeOrOther)
+}
+
+func (r eventRowsByMode) all() []db.CameraEventRow {
+	if len(r.edgeOrOther) == 0 {
+		return r.allMatches
+	}
+	if len(r.allMatches) == 0 {
+		return r.edgeOrOther
+	}
+	events := make([]db.CameraEventRow, 0, r.len())
+	events = append(events, r.allMatches...)
+	events = append(events, r.edgeOrOther...)
+	return events
+}
+
+// buildEventRows evaluates enabled event rules and returns rows grouped by record mode.
+func (h *Handler) buildEventRows(tableName string, cameraID string, tsNano int64, counts map[string]float64, rules []EventRule) eventRowsByMode {
 	if len(rules) == 0 {
-		return 0
+		return eventRowsByMode{}
 	}
 
-	eventTable := tableName + "_event"
-	var events []db.CameraEventRow
+	var events eventRowsByMode
 
 	for _, rule := range rules {
 		if !rule.Enabled {
@@ -552,7 +583,7 @@ func (h *Handler) evaluateEventRules(ctx context.Context, tableName string, came
 		}
 
 		if shouldRecord {
-			events = append(events, db.CameraEventRow{
+			row := db.CameraEventRow{
 				Name:               stateKey,
 				Time:               tsNano,
 				Value:              valueCode,
@@ -561,18 +592,153 @@ func (h *Handler) evaluateEventRules(ctx context.Context, tableName string, came
 				CameraID:           cameraID,
 				RuleID:             rule.ID,
 				RuleName:           rule.Name,
-			})
+			}
+			if rule.RecordMode == "ALL_MATCHES" {
+				events.allMatches = append(events.allMatches, row)
+			} else {
+				events.edgeOrOther = append(events.edgeOrOther, row)
+			}
 		}
 	}
 
-	if len(events) > 0 {
-		if err := h.machbase.InsertCameraEvents(ctx, eventTable, events); err != nil {
-			logger.GetLogger().Errorf("[camera:%s] failed to insert events: %v", cameraID, err)
-			return 0
+	return events
+}
+
+// evaluateEventRules evaluates all enabled event rules against detection counts.
+// Returns the number of event rows inserted.
+func (h *Handler) evaluateEventRules(ctx context.Context, tableName string, cameraID string, tsNano int64, counts map[string]float64, rules []EventRule) int {
+	events := h.buildEventRows(tableName, cameraID, tsNano, counts, rules)
+	if events.len() == 0 {
+		return 0
+	}
+	allEvents := events.all()
+	if err := h.insertCameraEvents(ctx, tableName, cameraID, allEvents); err != nil {
+		return 0
+	}
+	return len(allEvents)
+}
+
+func (h *Handler) insertCameraEvents(ctx context.Context, tableName string, cameraID string, events []db.CameraEventRow) error {
+	if len(events) == 0 {
+		return nil
+	}
+	eventTable := tableName + "_event"
+	if err := h.machbase.InsertCameraEvents(ctx, eventTable, events); err != nil {
+		logger.GetLogger().Errorf("[camera:%s] failed to insert events: %v", cameraID, err)
+		return err
+	}
+	return nil
+}
+
+func (h *Handler) persistEventsWhenVideoReady(camera CameraCreateRequest, tsNano int64, events []db.CameraEventRow) {
+	ctx, cancel := context.WithTimeout(context.Background(), h.eventCfg.VideoWaitDuration())
+	defer cancel()
+
+	ok, attempts, err := h.waitForVideoChunk(ctx, camera, tsNano)
+	if !ok {
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+			logger.GetLogger().Warnf("[event] dropped camera=%s table=%s timestamp_ns=%d events=%d attempts=%d reason=video_check_failed error=%v",
+				camera.Name, camera.Table, tsNano, len(events), attempts, err)
+			return
 		}
+		logger.GetLogger().Warnf("[event] dropped camera=%s table=%s timestamp_ns=%d events=%d attempts=%d reason=video_not_available wait_seconds=%d",
+			camera.Name, camera.Table, tsNano, len(events), attempts, h.eventCfg.VideoWaitSeconds)
+		return
 	}
 
-	return len(events)
+	if err := h.insertCameraEvents(context.Background(), camera.Table, camera.Name, events); err != nil {
+		logger.GetLogger().Warnf("[event] failed camera=%s table=%s timestamp_ns=%d events=%d reason=insert_failed error=%v",
+			camera.Name, camera.Table, tsNano, len(events), err)
+		return
+	}
+	logger.GetLogger().Infof("[event] saved camera=%s table=%s timestamp_ns=%d events=%d attempts=%d video_required=true",
+		camera.Name, camera.Table, tsNano, len(events), attempts)
+}
+
+func (h *Handler) waitForVideoChunk(ctx context.Context, camera CameraCreateRequest, tsNano int64) (bool, int, error) {
+	delay := h.eventCfg.VideoRetryInitialDuration()
+	maxDelay := h.eventCfg.VideoRetryMaxDuration()
+	attempts := 0
+	var lastErr error
+
+	for {
+		attempts++
+		ok, err := h.videoChunkAvailable(ctx, camera, tsNano)
+		if ok {
+			return true, attempts, nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = nil
+		}
+
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return false, attempts, lastErr
+			}
+			return false, attempts, ctx.Err()
+		case <-time.After(delay):
+		}
+
+		delay += time.Second
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+}
+
+func (h *Handler) videoChunkAvailable(ctx context.Context, camera CameraCreateRequest, tsNano int64) (bool, error) {
+	record, err := h.machbase.ChunkRecordForTime(ctx, camera.Table, camera.Name, time.Unix(0, tsNano))
+	if err != nil {
+		return false, err
+	}
+	if record == nil {
+		return false, nil
+	}
+	return h.chunkRecordFileExists(camera, record)
+}
+
+func (h *Handler) nextVideoChunkAvailable(ctx context.Context, camera CameraCreateRequest, tsNano int64) (bool, error) {
+	record, err := h.machbase.NextChunkRecordAfterTime(ctx, camera.Table, camera.Name, time.Unix(0, tsNano))
+	if err != nil {
+		return false, err
+	}
+	if record == nil {
+		return false, nil
+	}
+	return h.chunkRecordFileExists(camera, record)
+}
+
+func (h *Handler) chunkRecordFileExists(camera CameraCreateRequest, record *db.ChunkRecord) (bool, error) {
+	_, archiveDir := h.resolveCameraStorageDirs(camera.Name, &camera)
+	fullPath := record.ChunkPath
+	if !filepath.IsAbs(fullPath) {
+		fullPath = filepath.Join(archiveDir, fullPath)
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return !info.IsDir(), nil
+}
+
+func cloneCameraConfig(src *CameraCreateRequest) CameraCreateRequest {
+	if src == nil {
+		return CameraCreateRequest{}
+	}
+	dst := *src
+	if src.DetectObjects != nil {
+		dst.DetectObjects = append([]string(nil), src.DetectObjects...)
+	}
+	if src.EventRule != nil {
+		dst.EventRule = append([]EventRule(nil), src.EventRule...)
+	}
+	return dst
 }
 
 // GetCamera handles GET /api/camera/:id.
@@ -919,20 +1085,14 @@ func (h *Handler) DeleteCamera(c *gin.Context) {
 		return
 	}
 
-	// 삭제 전에 rtsp_path를 미리 읽어둠
-	var rtspPathToRemove string
-	if cfg := h.getCameraConfig(id); cfg != nil {
-		rtspPathToRemove = cfg.RtspPath
-	}
-
-	if err := os.Remove(cameraPath); err != nil {
-		logger.GetLogger().Errorf("DeleteCamera[%s]: failed to delete camera config file %q: %v", id, cameraPath, err)
-		errorResponse(c, tick, http.StatusInternalServerError, "failed to delete camera config file")
+	cfg, err := h.loadCameraConfigFromFile(id)
+	if err != nil {
+		logger.GetLogger().Errorf("DeleteCamera[%s]: failed to load camera config file %q: %v", id, cameraPath, err)
+		errorResponse(c, tick, http.StatusInternalServerError, "failed to load camera config file")
 		return
 	}
-
-	// MVS 파일도 삭제
-	h.removeMvsFiles(id)
+	rtspPathToRemove := cfg.RtspPath
+	h.recordDeletedCameraState(id, cfg)
 
 	// 실행 중인 ffmpeg 프로세스 종료
 	h.processMu.Lock()
@@ -943,19 +1103,29 @@ func (h *Handler) DeleteCamera(c *gin.Context) {
 	h.processMu.Unlock()
 	if running {
 		proc.cancel()
-		if err := h.watcher.RemoveWatch(c.Request.Context(), id); err != nil {
-			logger.GetLogger().Warnf("DeleteCamera[%s]: failed to remove watcher: %v", id, err)
-		}
 		logger.GetLogger().Infof("DeleteCamera[%s]: stopped ffmpeg process", id)
 	}
 
+	if err := h.watcher.RemoveWatch(c.Request.Context(), id); err != nil && !isWatcherRemoveNoopError(err) {
+		logger.GetLogger().Warnf("DeleteCamera[%s]: failed to remove watcher: %v", id, err)
+	}
+
+	// MVS 파일도 삭제
+	h.removeMvsFiles(id)
+
 	// MediaMTX path 삭제
-	if rtspPathToRemove != "" {
+	if rtspPathToRemove != "" && h.mediamtxClient != nil {
 		if err := h.mediamtxClient.RemovePath(c.Request.Context(), rtspPathToRemove); err != nil {
 			logger.GetLogger().Warnf("DeleteCamera[%s]: failed to remove MediaMTX path %q: %v", id, rtspPathToRemove, err)
 		} else {
 			logger.GetLogger().Infof("DeleteCamera[%s]: removed MediaMTX path %q", id, rtspPathToRemove)
 		}
+	}
+
+	if err := os.Remove(cameraPath); err != nil {
+		logger.GetLogger().Errorf("DeleteCamera[%s]: failed to delete camera config file %q: %v", id, cameraPath, err)
+		errorResponse(c, tick, http.StatusInternalServerError, "failed to delete camera config file")
+		return
 	}
 
 	// Event rules 캐시 제거
@@ -964,6 +1134,103 @@ func (h *Handler) DeleteCamera(c *gin.Context) {
 	successResponse(c, tick, map[string]string{
 		"name": id,
 	})
+}
+
+func (h *Handler) removeCameraStorageDirs(cameraID string, cfg *CameraCreateRequest) error {
+	outputDir, archiveDir := h.resolveCameraStorageDirs(cameraID, cfg)
+
+	defaultRoot := filepath.Clean(filepath.Join(h.dataDir, cameraID))
+	defaultOutput := filepath.Join(defaultRoot, "in")
+	defaultArchive := filepath.Join(defaultRoot, "out")
+
+	if outputDir == defaultOutput && archiveDir == defaultArchive {
+		return h.removeCameraStorageDir(defaultRoot)
+	}
+
+	targets := []string{outputDir}
+	if archiveDir != outputDir {
+		targets = append(targets, archiveDir)
+	}
+
+	sort.Slice(targets, func(i, j int) bool {
+		return len(targets[i]) < len(targets[j])
+	})
+
+	var removed []string
+	for _, target := range targets {
+		skip := false
+		for _, parent := range removed {
+			if sameOrChildPath(target, parent) {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		if err := h.removeCameraStorageDir(target); err != nil {
+			return err
+		}
+		removed = append(removed, target)
+	}
+
+	return nil
+}
+
+func (h *Handler) removeCameraStorageDir(path string) error {
+	cleanPath := filepath.Clean(path)
+	if !h.isSafeCameraStoragePath(cleanPath) {
+		return fmt.Errorf("refusing to remove unsafe camera storage path %q", cleanPath)
+	}
+	if err := os.RemoveAll(cleanPath); err != nil {
+		return fmt.Errorf("remove %q: %w", cleanPath, err)
+	}
+	return nil
+}
+
+func (h *Handler) isSafeCameraStoragePath(path string) bool {
+	if path == "" || path == "." {
+		return false
+	}
+
+	rootPath := filepath.VolumeName(path) + string(os.PathSeparator)
+	if path == rootPath {
+		return false
+	}
+
+	protected := []string{
+		h.dataDir,
+		filepath.Dir(h.dataDir),
+		h.cameraDir,
+		h.mvsDir,
+		h.logDir,
+	}
+	for _, candidate := range protected {
+		if candidate == "" {
+			continue
+		}
+		if filepath.Clean(candidate) == path {
+			return false
+		}
+	}
+
+	return true
+}
+
+func sameOrChildPath(path, parent string) bool {
+	rel, err := filepath.Rel(parent, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != "..")
+}
+
+func isWatcherRemoveNoopError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "watcher not running") ||
+		strings.Contains(err.Error(), "not found in watch set")
 }
 
 // TestCameraConnection handles POST /api/camera/:id/test.

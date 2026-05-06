@@ -88,7 +88,7 @@ func run(c context.Context, path string, serveWeb bool) error {
 	ff := ffmpeg.New(cfg.FFmpeg, logDir)
 	w := watcher.New(neo, ff, cfg.Server.CameraDir)
 
-	svr, err := server.New(cfg.Server, cfg.Mediamtx, logDir, neo, w, ff, cfg.FFmpeg.Binary, absConfigPath, serveWeb)
+	svr, err := server.New(cfg.Server, cfg.Mediamtx, cfg.Event, logDir, neo, w, ff, cfg.FFmpeg.Binary, absConfigPath, serveWeb)
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}

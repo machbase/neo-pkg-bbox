@@ -50,6 +50,80 @@ Response:
 
 ---
 
+## GET /api/retention/status
+
+데이터 보존(retention) 설정과 실행 상태 조회.
+
+Response:
+```json
+{
+    "config": {
+        "enabled": false,
+        "keep_hours": 720,
+        "start_at_utc": "18:00",
+        "interval_hours": 0,
+        "consistency_cleanup": true,
+        "targets": {
+            "database": true,
+            "files": true
+        }
+    },
+    "running": false,
+    "next_run_at": "2026-04-30T18:00:00Z",
+    "last_run": null
+}
+```
+
+Note:
+- `event` 설정은 사용자 입력으로 노출하지 않는 숨김 운영 정책이다. `/api/config` 저장 요청에 `event` 키가 없으면 서버가 기본값을 적용해서 저장한다.
+- 기본값은 `require_video=true`, `video_wait_seconds=120`, `video_retry_initial_seconds=1`, `video_retry_max_seconds=5`다.
+- `keep_hours`는 보존 기간이다. 프론트엔드는 일 단위 입력도 시간으로 환산해서 저장한다. 예: 주말 테스트에서 6시간만 보존하려면 `keep_hours: 6`.
+- `start_at_utc`는 프로그램 기동 후 최초 retention 작업을 시작할 UTC 기준 시각이다. 프론트엔드는 로컬 시각 입력/표시를 UTC로 변환한다.
+- `interval_hours`는 최초 실행 이후 반복 실행 주기다. `0`이면 24시간 주기로 실행한다. 예: 2일마다 실행하려면 `interval_hours: 48`.
+- `consistency_cleanup`은 retention 실행 마지막에 cutoff 이전 영상 파일 중 DB row가 없는 파일을 정리한다. 기본값은 `true`다.
+- retention 대상 테이블은 현재 카메라 설정과 삭제된 카메라 tombstone에 기록된 테이블이다.
+
+---
+
+## POST /api/retention/run
+
+retention을 즉시 실행한다. 자동 실행은 `config.yaml`의 `retention.enabled`, `keep_hours`, `start_at_utc`, `interval_hours` 설정을 따른다.
+
+Request:
+```json
+{
+    "dry_run": true
+}
+```
+
+Response:
+```json
+{
+    "started_at": "2026-04-30T09:00:00Z",
+    "finished_at": "2026-04-30T09:00:01Z",
+    "dry_run": true,
+    "cutoff": "2026-03-31T09:00:00Z",
+    "cutoff_ns": 1774947600000000000,
+    "candidate_rows": 0,
+    "deleted_files": 0,
+    "missing_files": 0,
+    "skipped_files": 0,
+    "deleted_metadata": 0,
+    "tables": []
+}
+```
+
+Note:
+- 영상 파일은 DB row 삭제가 성공한 뒤 삭제한다.
+- `{table}`은 `name = camera_id` 기준으로 처리한다.
+- `{table}_event`, `{table}_log`는 metadata의 `camera_id`로 tag name을 찾은 뒤 tag name 단위로 처리한다.
+- DB row는 있는데 파일이 없는 cutoff 이전 데이터는 DB row를 삭제하고 `missing_files`로 기록한다.
+- 파일은 있는데 DB row가 없는 cutoff 이전 영상 파일은 `consistency_cleanup` 단계에서 삭제한다.
+- 삭제된 카메라의 데이터와 파일이 모두 없으면 TAG metadata도 삭제한다.
+- 삭제된 카메라의 tombstone은 남아 있는데 해당 `{table}`이 DROP된 경우, DB 참조를 복구할 수 없으므로 해당 카메라의 `output_dir`/`archive_dir` 저장 파일 전체를 삭제한다.
+
+---
+
 ## POST /api/camera
 
 카메라 생성
@@ -565,7 +639,7 @@ Response: `POST /api/cameras/ping` 과 동일
 
 ## POST /api/ai/result
 
-AI 감지 결과 업로드 ({camera}_log 테이블에 저장)
+AI 감지 결과 업로드. `save_objects=true`인 카메라는 `{table}_log`에 감지 count를 저장하고, event rule 결과는 영상 chunk가 확인된 뒤 `{table}_event`에 저장한다.
 
 Request:
 ```json
@@ -586,6 +660,16 @@ Response:
 ```json
 null                                      // 응답 본문 없음 (success: true만 확인)
 ```
+
+Note:
+- `event.require_video=true`이면 API 응답 후 백그라운드에서 최대 `event.video_wait_seconds` 동안 해당 timestamp의 영상 chunk row와 파일을 확인한다.
+- `ALL_MATCHES`와 `EDGE_ONLY` 이벤트는 카메라별 내부 큐에서 순차적으로 재시도/저장한다. 연속 발생 시 API 요청마다 대기 goroutine을 만들지 않는다.
+- 큐 크기는 카메라별 16,384개다. 특정 카메라의 video 지연이나 queue full은 다른 카메라 queue에 영향을 주지 않는다. queue full 로그는 반복 시 일정 간격으로 누적 요약한다.
+- 해당 timestamp의 video는 없고 그 이후 timestamp의 video row와 파일이 확인되면 `video_gap_after_timestamp`로 즉시 drop한다.
+- `EDGE_ONLY`의 trigger/resolve 판정은 큐에 넣기 전 AI result 처리 시점에 수행한다. 이후 video 확인 실패로 drop되면 해당 trigger/resolve row는 저장되지 않는다.
+- 확인되면 event rule 결과를 `{table}_event`에 저장한다.
+- 확인되지 않으면 event는 저장하지 않고 `blackbox.log`에 drop 로그를 남긴다.
+- 감지 count 저장(`{table}_log`)은 기존처럼 API 처리 시점에 즉시 수행한다.
 
 ---
 

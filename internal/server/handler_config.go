@@ -14,12 +14,13 @@ import (
 // AppConfigDTO는 GET/POST /api/config 에서 사용하는 설정 구조체.
 // server.addr 과 ai 는 읽기 전용 (POST 시 무시됨).
 type AppConfigDTO struct {
-	Server   ServerConfigAPI   `json:"server"`
-	Machbase MachbaseConfigAPI `json:"machbase"`
-	Ffmpeg   FfmpegConfigAPI   `json:"ffmpeg"`
-	Mediamtx MediamtxConfigAPI `json:"mediamtx"`
-	Log      LogConfigAPI      `json:"log"`
-	AI       AIConfigAPI       `json:"ai"` // 읽기 전용 (POST 시 무시)
+	Server    ServerConfigAPI        `json:"server"`
+	Machbase  MachbaseConfigAPI      `json:"machbase"`
+	Ffmpeg    FfmpegConfigAPI        `json:"ffmpeg"`
+	Mediamtx  MediamtxConfigAPI      `json:"mediamtx"`
+	Log       LogConfigAPI           `json:"log"`
+	AI        AIConfigAPI            `json:"ai"` // 읽기 전용 (POST 시 무시)
+	Retention config.RetentionConfig `json:"retention"`
 }
 
 type ServerConfigAPI struct {
@@ -108,9 +109,10 @@ func (h *Handler) PostAppConfig(c *gin.Context) {
 		return
 	}
 
-	// 기존 config 에서 읽기 전용 필드(server.addr, ai) 보존
+	// 기존 config 에서 읽기 전용/숨김 필드(server.addr, ai, event) 보존
 	var preservedAddr string
 	var preservedAI config.AIConfig
+	var preservedEvent config.EventConfig
 
 	existingCfg, err := config.LoadRaw(h.configPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -120,11 +122,14 @@ func (h *Handler) PostAppConfig(c *gin.Context) {
 	if existingCfg != nil {
 		preservedAddr = existingCfg.Server.Addr
 		preservedAI = existingCfg.AI
+		preservedEvent = existingCfg.Event
 	}
+	preservedEvent.ApplyDefaults()
 
 	cfg := dtoToCfg(&req)
 	cfg.Server.Addr = preservedAddr
 	cfg.AI = preservedAI
+	cfg.Event = preservedEvent
 
 	if err := os.MkdirAll(filepath.Dir(h.configPath), 0755); err != nil {
 		errorResponse(c, tick, http.StatusInternalServerError, "failed to create config dir: "+err.Error())
@@ -140,6 +145,8 @@ func (h *Handler) PostAppConfig(c *gin.Context) {
 }
 
 func cfgToDTO(cfg *config.AppConfig) AppConfigDTO {
+	retention := cfg.Retention
+	retention.ApplyDefaults()
 	return AppConfigDTO{
 		Server: ServerConfigAPI{
 			Addr:      cfg.Server.Addr,
@@ -185,6 +192,7 @@ func cfgToDTO(cfg *config.AppConfig) AppConfigDTO {
 			Binary:     cfg.AI.Binary,
 			ConfigFile: cfg.AI.ConfigFile,
 		},
+		Retention: retention,
 	}
 }
 
@@ -235,6 +243,7 @@ func dtoToCfg(req *AppConfigDTO) config.AppConfig {
 				Compress:   req.Log.File.Compress,
 			},
 		},
+		Retention: req.Retention,
 		// AI 는 호출자에서 보존값으로 덮어씀
 	}
 }
