@@ -139,14 +139,14 @@ func (h *Handler) startRetentionScheduler(ctx context.Context) {
 		cfg, err := h.loadRetentionConfig()
 		if err != nil {
 			logger.GetLogger().Warnf("[retention] failed to load config: %v", err)
-			if !sleepOrDone(ctx, time.Minute) {
+			if _, ok := h.waitRetentionOrReset(ctx, time.Minute); !ok {
 				return
 			}
 			continue
 		}
 
 		if !cfg.Enabled {
-			if !sleepOrDone(ctx, time.Minute) {
+			if _, ok := h.waitRetentionOrReset(ctx, time.Minute); !ok {
 				return
 			}
 			continue
@@ -155,7 +155,7 @@ func (h *Handler) startRetentionScheduler(ctx context.Context) {
 		next, err := nextRetentionRunAt(cfg, time.Now().UTC())
 		if err != nil {
 			logger.GetLogger().Warnf("[retention] invalid schedule: %v", err)
-			if !sleepOrDone(ctx, time.Minute) {
+			if _, ok := h.waitRetentionOrReset(ctx, time.Minute); !ok {
 				return
 			}
 			continue
@@ -163,8 +163,27 @@ func (h *Handler) startRetentionScheduler(ctx context.Context) {
 		logger.GetLogger().Infof("[retention] scheduled next_run_at=%s keep_hours=%d start_at_utc=%s interval_hours=%d targets_database=%v targets_files=%v",
 			next.Format(time.RFC3339), cfg.KeepHours, cfg.StartAtUTC, cfg.IntervalHours, cfg.Targets.Database, cfg.Targets.Files)
 
-		if !sleepOrDone(ctx, time.Until(next)) {
+		timerFired, ok := h.waitRetentionOrReset(ctx, time.Until(next))
+		if !ok {
 			return
+		}
+		if !timerFired {
+			logger.GetLogger().Info("[retention] schedule reset; reloading config")
+			continue
+		}
+
+		latest, err := h.loadRetentionConfig()
+		if err != nil {
+			logger.GetLogger().Warnf("[retention] failed to reload config before run: %v", err)
+			continue
+		}
+		if !latest.Enabled {
+			logger.GetLogger().Info("[retention] scheduled run skipped because retention is disabled")
+			continue
+		}
+		if retentionScheduleSignature(cfg) != retentionScheduleSignature(latest) {
+			logger.GetLogger().Info("[retention] scheduled run skipped because schedule changed")
+			continue
 		}
 
 		if _, err := h.runRetentionWithLock(ctx, false); err != nil {
@@ -1026,7 +1045,33 @@ func nextRetentionRunAt(cfg config.RetentionConfig, now time.Time) (time.Time, e
 	return next, nil
 }
 
-func sleepOrDone(ctx context.Context, d time.Duration) bool {
+type retentionScheduleKey struct {
+	Enabled       bool
+	StartAtUTC    string
+	IntervalHours int
+}
+
+func retentionScheduleSignature(cfg config.RetentionConfig) retentionScheduleKey {
+	cfg.ApplyDefaults()
+	return retentionScheduleKey{
+		Enabled:       cfg.Enabled,
+		StartAtUTC:    cfg.StartAtUTC,
+		IntervalHours: cfg.IntervalHours,
+	}
+}
+
+func (h *Handler) notifyRetentionScheduleReset() {
+	if h.retentionScheduleReset == nil {
+		return
+	}
+	select {
+	case h.retentionScheduleReset <- struct{}{}:
+		logger.GetLogger().Info("[retention] schedule reset requested")
+	default:
+	}
+}
+
+func (h *Handler) waitRetentionOrReset(ctx context.Context, d time.Duration) (timerFired bool, ok bool) {
 	if d <= 0 {
 		d = time.Second
 	}
@@ -1034,9 +1079,11 @@ func sleepOrDone(ctx context.Context, d time.Duration) bool {
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return false
+		return false, false
+	case <-h.retentionScheduleReset:
+		return false, true
 	case <-timer.C:
-		return true
+		return true, true
 	}
 }
 

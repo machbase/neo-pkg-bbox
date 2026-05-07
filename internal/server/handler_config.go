@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"time"
 
 	"github.com/machbase/neo-pkg-bbox/internal/config"
@@ -119,6 +120,10 @@ func (h *Handler) PostAppConfig(c *gin.Context) {
 		errorResponse(c, tick, http.StatusInternalServerError, "failed to read config: "+err.Error())
 		return
 	}
+	oldRetention := config.RetentionConfig{}
+	if existingCfg != nil {
+		oldRetention = normalizeRetentionConfig(existingCfg.Retention)
+	}
 	if existingCfg != nil {
 		preservedAddr = existingCfg.Server.Addr
 		preservedAI = existingCfg.AI
@@ -130,6 +135,7 @@ func (h *Handler) PostAppConfig(c *gin.Context) {
 	cfg.Server.Addr = preservedAddr
 	cfg.AI = preservedAI
 	cfg.Event = preservedEvent
+	retentionChanged := existingCfg == nil || retentionConfigChanged(oldRetention, cfg.Retention)
 
 	if err := os.MkdirAll(filepath.Dir(h.configPath), 0755); err != nil {
 		errorResponse(c, tick, http.StatusInternalServerError, "failed to create config dir: "+err.Error())
@@ -141,7 +147,20 @@ func (h *Handler) PostAppConfig(c *gin.Context) {
 		return
 	}
 
+	if retentionChanged {
+		h.notifyRetentionScheduleReset()
+	}
+
 	successResponse(c, tick, nil)
+}
+
+func normalizeRetentionConfig(cfg config.RetentionConfig) config.RetentionConfig {
+	cfg.ApplyDefaults()
+	return cfg
+}
+
+func retentionConfigChanged(oldCfg config.RetentionConfig, newCfg config.RetentionConfig) bool {
+	return !reflect.DeepEqual(normalizeRetentionConfig(oldCfg), normalizeRetentionConfig(newCfg))
 }
 
 func cfgToDTO(cfg *config.AppConfig) AppConfigDTO {

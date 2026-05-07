@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -43,4 +44,47 @@ func TestNextRetentionRunAt_DailySchedule(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, time.Date(2026, 4, 30, 18, 0, 0, 0, time.UTC), next)
+}
+
+func TestRetentionConfigChanged_NormalizesDefaults(t *testing.T) {
+	enabled := true
+	oldCfg := config.RetentionConfig{}
+	newCfg := config.RetentionConfig{
+		KeepHours:          30 * 24,
+		StartAtUTC:         "18:00",
+		IntervalHours:      0,
+		ConsistencyCleanup: &enabled,
+		Targets: config.RetentionTargetsConfig{
+			Database: true,
+			Files:    true,
+		},
+	}
+
+	assert.False(t, retentionConfigChanged(oldCfg, newCfg))
+}
+
+func TestRetentionConfigChanged_DetectsScheduleChange(t *testing.T) {
+	oldCfg := config.RetentionConfig{StartAtUTC: "00:00"}
+	newCfg := config.RetentionConfig{StartAtUTC: "01:00"}
+
+	assert.True(t, retentionConfigChanged(oldCfg, newCfg))
+}
+
+func TestNotifyRetentionScheduleResetCoalesces(t *testing.T) {
+	h := &Handler{retentionScheduleReset: make(chan struct{}, 1)}
+
+	h.notifyRetentionScheduleReset()
+	h.notifyRetentionScheduleReset()
+
+	assert.Len(t, h.retentionScheduleReset, 1)
+}
+
+func TestWaitRetentionOrResetReturnsOnReset(t *testing.T) {
+	h := &Handler{retentionScheduleReset: make(chan struct{}, 1)}
+	h.notifyRetentionScheduleReset()
+
+	timerFired, ok := h.waitRetentionOrReset(context.Background(), time.Hour)
+
+	assert.True(t, ok)
+	assert.False(t, timerFired)
 }
