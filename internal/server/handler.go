@@ -91,6 +91,7 @@ type Handler struct {
 	deletedCameras         map[string]deletedCameraState
 	retentionMu            sync.Mutex
 	retentionRunning       bool
+	retentionScheduleReset chan struct{}
 	lastRetentionResult    *RetentionRunResult
 	eventCfg               config.EventConfig
 	videoEventQueues       map[string]chan queuedVideoEvent
@@ -140,6 +141,7 @@ func NewHandler(machbase *db.Machbase, watcher Watcher, ffRunner *ffmpeg.FFmpegR
 		edgeState:              make(map[string]bool),
 		cameraConfigs:          make(map[string]*CameraCreateRequest),
 		deletedCameras:         make(map[string]deletedCameraState),
+		retentionScheduleReset: make(chan struct{}, 1),
 		eventCfg:               eventCfg,
 		videoEventQueues:       make(map[string]chan queuedVideoEvent),
 		videoQueueDropStats:    make(map[string]queueFullLogState),
