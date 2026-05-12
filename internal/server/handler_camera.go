@@ -39,6 +39,7 @@ type MvsCameraCreateRequest struct {
 	CameraID      string   `json:"camera_id"`                         // cam{id}_{model_id}_{time} (자동 생성 가능)
 	CameraURL     string   `json:"camera_url" binding:"required"`     // rtsp URL
 	ModelID       int      `json:"model_id"`                          // 기본 모델 0
+	Interval      int      `json:"interval"`                          // AI detection interval, 미지정/0 이면 1로 보정
 	DetectObjects []string `json:"detect_objects" binding:"required"` // ex) ["person", "car", "truck", "bus"]
 }
 
@@ -56,6 +57,7 @@ type CameraCreateRequest struct {
 	MediaURL        string `json:"media_url"`         // 미디어 서버 URL
 
 	ModelID       int      `json:"model_id"`
+	Interval      int      `json:"interval"`       // AI detection interval, 미지정/0 이면 1로 보정
 	DetectObjects []string `json:"detect_objects"` // ex) ["person", "car", "truck", "bus"]
 	SaveObjects   bool     `json:"save_objects"`   // {camera}_log 테이블에 데이터 저장 여부
 
@@ -78,6 +80,7 @@ type CameraUpdateRequest struct {
 	MediaURL string `json:"media_url"`
 
 	ModelID       int      `json:"model_id"`
+	Interval      int      `json:"interval"`
 	DetectObjects []string `json:"detect_objects"`
 	SaveObjects   bool     `json:"save_objects"`
 
@@ -187,6 +190,10 @@ func (h *Handler) CreateCamera(c *gin.Context) {
 	req.MediamtxRtspURL = h.buildMediamtxRtspURL(req.RtspPath)
 	// 신규 카메라는 항상 enabled = true
 	req.Enabled = boolPtr(true)
+	// interval 미지정/0 이면 기본값 1
+	if req.Interval <= 0 {
+		req.Interval = 1
+	}
 
 	// JSON 저장 시 null 대신 빈 배열로 기록되도록 초기화
 	if req.EventRule == nil {
@@ -282,6 +289,7 @@ func (h *Handler) CreateCamera(c *gin.Context) {
 		CameraID:      req.Name,
 		CameraURL:     mvsCameraURL,
 		ModelID:       req.ModelID,
+		Interval:      req.Interval,
 		DetectObjects: detectObjects,
 	}
 
@@ -356,6 +364,11 @@ func (h *Handler) CreateMvsCamera(c *gin.Context) {
 		req.CameraID = fmt.Sprintf("cam%d_%d_%d", time.Now().UnixNano()%100000, req.ModelID, time.Now().Unix())
 	}
 
+	// interval 미지정/0 이면 기본값 1
+	if req.Interval <= 0 {
+		req.Interval = 1
+	}
+
 	// .mvs 파일로 저장
 	mvsDetectObjects := req.DetectObjects
 	if mvsDetectObjects == nil {
@@ -365,6 +378,7 @@ func (h *Handler) CreateMvsCamera(c *gin.Context) {
 		"camera_id":      req.CameraID,
 		"camera_url":     req.CameraURL,
 		"model_id":       req.ModelID,
+		"interval":       req.Interval,
 		"detect_objects": mvsDetectObjects,
 	}
 
@@ -857,6 +871,10 @@ func (h *Handler) UpdateCamera(c *gin.Context) {
 	}
 	existing.MediaURL = req.MediaURL
 	existing.ModelID = req.ModelID
+	existing.Interval = req.Interval
+	if existing.Interval <= 0 {
+		existing.Interval = 1
+	}
 	existing.DetectObjects = req.DetectObjects
 	existing.SaveObjects = req.SaveObjects
 	existing.FFmpegCommand = req.FFmpegCommand
@@ -925,6 +943,7 @@ func (h *Handler) UpdateCamera(c *gin.Context) {
 		CameraID:      id,
 		CameraURL:     newMvsCameraURL,
 		ModelID:       existing.ModelID,
+		Interval:      existing.Interval,
 		DetectObjects: newMvsDetectObjects,
 	}
 
@@ -958,6 +977,11 @@ func (h *Handler) UpdateCamera(c *gin.Context) {
 
 				// model_id 비교
 				if oldMvs.ModelID != newMvs.ModelID {
+					contentChanged = true
+				}
+
+				// interval 비교
+				if oldMvs.Interval != newMvs.Interval {
 					contentChanged = true
 				}
 
@@ -1326,10 +1350,15 @@ func (h *Handler) enableCameraInternal(ctx context.Context, id string, cam *Came
 		if startupDetectObjects == nil {
 			startupDetectObjects = []string{}
 		}
+		startupInterval := cam.Interval
+		if startupInterval <= 0 {
+			startupInterval = 1
+		}
 		mvs := MvsCameraCreateRequest{
 			CameraID:      id,
 			CameraURL:     mvsCamURL,
 			ModelID:       cam.ModelID,
+			Interval:      startupInterval,
 			DetectObjects: startupDetectObjects,
 		}
 		if mvsJSON, err := json.MarshalIndent(mvs, "", "  "); err == nil {
@@ -1999,6 +2028,9 @@ func (h *Handler) UpdateDetectObjectsByCamera(c *gin.Context) {
 			var oldMvs MvsCameraCreateRequest
 			if err := json.Unmarshal(oldMvsData, &oldMvs); err == nil {
 				oldMvs.DetectObjects = req.DetectObjects
+				if oldMvs.Interval <= 0 {
+					oldMvs.Interval = 1
+				}
 
 				if newMvsJSON, err := json.MarshalIndent(oldMvs, "", "  "); err == nil {
 					h.removeMvsFiles(id)
