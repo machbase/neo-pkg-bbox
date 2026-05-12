@@ -527,6 +527,11 @@
                         <input type="text" id="create-objects" placeholder="person,car,truck,bus" />
                     </div>
                     <div class="form-group">
+                        <label>AI Detection Interval</label>
+                        <input type="number" id="create-interval" placeholder="1" value="1" min="1" />
+                        <p class="help-text">AI detection 주기. 미지정/0이면 1로 보정됩니다.</p>
+                    </div>
+                    <div class="form-group">
                         <label>Output Directory (ffmpeg 출력 경로)</label>
                         <input type="text" id="create-output-dir" placeholder="빈 값: 자동 설정 ({data_dir}/{name}/in), 절대 경로: 그대로 사용" />
                         <p class="help-text">빈 값이면 {data_dir}/{name}/in 사용, 절대 경로면 그대로 사용</p>
@@ -1069,6 +1074,11 @@
                         <input type="number" id="mvs-model-id" placeholder="0" value="0" />
                     </div>
                     <div class="form-group">
+                        <label>AI Detection Interval</label>
+                        <input type="number" id="mvs-interval" placeholder="1" value="1" min="1" />
+                        <p class="help-text">AI detection 주기. 미지정/0이면 1로 보정됩니다.</p>
+                    </div>
+                    <div class="form-group">
                         <label>Detect Objects (쉼표로 구분)</label>
                         <input type="text" id="mvs-detect-objects" placeholder="person,car,truck,bus" />
                     </div>
@@ -1385,6 +1395,7 @@ ${JSON.stringify(data, null, 2)}
                     desc: document.getElementById('create-desc').value,
                     rtsp_url: document.getElementById('create-rtsp').value,
                     detect_objects: document.getElementById('create-objects').value.split(',').map(s => s.trim()).filter(Boolean),
+                    interval: parseInt(document.getElementById('create-interval').value) || 0,
                     save_objects: true,
                     output_dir: outputDir,
                     archive_dir: archiveDir,
@@ -2040,6 +2051,7 @@ ${JSON.stringify({ error: error.message }, null, 2)}
             const cameraId = document.getElementById('mvs-camera-id').value;
             const cameraUrl = document.getElementById('mvs-camera-url').value;
             const modelId = parseInt(document.getElementById('mvs-model-id').value) || 0;
+            const interval = parseInt(document.getElementById('mvs-interval').value) || 0;
             const detectObjectsStr = document.getElementById('mvs-detect-objects').value;
             const detectObjects = detectObjectsStr.split(',').map(s => s.trim()).filter(Boolean);
 
@@ -2049,6 +2061,7 @@ ${JSON.stringify({ error: error.message }, null, 2)}
                     camera_id: cameraId,
                     camera_url: cameraUrl,
                     model_id: modelId,
+                    interval: interval,
                     detect_objects: detectObjects
                 };
 
@@ -2116,6 +2129,7 @@ ${JSON.stringify({ error: error.message }, null, 2)}
                     set('create-desc', '건물 정문 CCTV');
                     set('create-rtsp', 'rtsp://192.168.1.100:554/stream');
                     set('create-objects', 'person,car,truck,bus');
+                    set('create-interval', '1');
                     set('create-output-dir', '');
                     set('create-archive-dir', '');
                     break;
@@ -2127,7 +2141,7 @@ ${JSON.stringify({ error: error.message }, null, 2)}
                     set('update-camera-json', JSON.stringify({
                         desc: '수정된 설명',
                         rtsp_url: 'rtsp://192.168.1.100:554/stream',
-                        detect_objects: ['person', 'car'], save_objects: true, ffmpeg_options: []
+                        detect_objects: ['person', 'car'], interval: 1, save_objects: true, ffmpeg_options: []
                     }, null, 2));
                     break;
                 case 'camera-delete':
@@ -2227,6 +2241,7 @@ ${JSON.stringify({ error: error.message }, null, 2)}
                     set('mvs-camera-id', 'camera1');
                     set('mvs-camera-url', 'rtsp://192.168.1.100:554/stream');
                     set('mvs-model-id', '0');
+                    set('mvs-interval', '1');
                     set('mvs-detect-objects', 'person,car,truck,bus');
                     break;
                 case 'machbase-sql':
