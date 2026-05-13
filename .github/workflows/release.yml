@@ -81,7 +81,11 @@ jobs:
             [ -e "$f" ] && FILES+=("$f")
           done
 
-          gh release create "${TAG}" \
-            --title "${TAG}" \
-            --generate-notes \
-            "${FILES[@]}"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" "${FILES[@]}" --clobber
+          else
+            gh release create "${TAG}" \
+              --title "${TAG}" \
+              --generate-notes \
+              "${FILES[@]}"
+          fi
