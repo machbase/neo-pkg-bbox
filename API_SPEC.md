@@ -2,7 +2,7 @@
 
 ## GET /api/tables
 
-Machbase TAG 테이블 목록 조회 (`_event`, `_log` 접미사 테이블 제외)
+Machbase TAG 테이블 목록 조회 (`_event`, `_log` 접미사 테이블 및 mounted backup database 테이블 제외)
 
 Response:
 ```json

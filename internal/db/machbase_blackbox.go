@@ -237,7 +237,9 @@ func (m *Machbase) ListTags(ctx context.Context) ([]string, error) {
 // _event, _log 파생 테이블을 제외하고 청크 전용 메인 테이블만 반환.
 // 카메라 고아 설정파일 탐지용: 메인 테이블이 없을 때만 설정파일을 삭제하기 위함.
 func (m *Machbase) ListTagTables(ctx context.Context) ([]string, error) {
-	sql := "SELECT NAME FROM M$SYS_TABLES WHERE TYPE=6 AND FLAG=0 AND NAME NOT LIKE '%_EVENT' AND NAME NOT LIKE '%_LOG' ORDER BY NAME"
+	// BBOX currently talks to Machbase through the REST API, so it operates on SYS-owned tables.
+	// If native DB connections are added later, filter by the connected user's M$SYS_USERS.USER_ID.
+	sql := "SELECT NAME FROM M$SYS_TABLES WHERE TYPE=6 AND FLAG=0 AND DATABASE_ID = -1 AND USER_ID = 1 AND NAME NOT LIKE '%_EVENT' AND NAME NOT LIKE '%_LOG' ORDER BY NAME"
 	resp, err := m.Query(ctx, sql)
 	if err != nil {
 		return nil, err
@@ -257,12 +259,14 @@ func (m *Machbase) ListTagTables(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-// ListTables fetches TAG table names from Machbase that match the video chunk table schema.
+// ListTables fetches writable TAG table names from Machbase that match the video chunk table schema.
 // Only returns tables with columns: name, time, value, chunk_path
 // Excludes _event and _log suffixed tables.
 func (m *Machbase) ListTables(ctx context.Context) ([]string, error) {
 	// First, get all TAG tables (TYPE = 6) with their IDs
-	sql := "SELECT ID, NAME FROM M$SYS_TABLES WHERE TYPE = 6 ORDER BY NAME"
+	// BBOX currently talks to Machbase through the REST API, so it operates on SYS-owned tables.
+	// If native DB connections are added later, filter by the connected user's M$SYS_USERS.USER_ID.
+	sql := "SELECT ID, NAME FROM M$SYS_TABLES WHERE TYPE = 6 AND DATABASE_ID = -1 AND USER_ID = 1 ORDER BY NAME"
 	resp, err := m.Query(ctx, sql)
 	if err != nil {
 		return nil, err
