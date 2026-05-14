@@ -37,6 +37,23 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xz-utils
 
+      - name: Debug AI token
+        env:
+          GH_TOKEN: ${{ secrets.AI_REPO_TOKEN }}
+        run: |
+          echo "token length: ${#GH_TOKEN}"
+          echo "--- repo HEAD ---"
+          curl -sI -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/machbase/neo-blackbox-ai | head -5
+          echo "--- releases/latest ---"
+          curl -s -o /tmp/r.json -w "HTTP %{http_code}\n" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/machbase/neo-blackbox-ai/releases/latest
+          head -c 400 /tmp/r.json; echo
+          echo "--- gh auth status ---"
+          gh auth status 2>&1 || true
+
       - name: Fetch AI files
         env:
           GH_TOKEN: ${{ secrets.AI_REPO_TOKEN }}
