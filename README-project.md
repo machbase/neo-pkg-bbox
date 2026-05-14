@@ -527,7 +527,7 @@ CREATE TAG TABLE IF NOT EXISTS {table}_log (
 
 | Method | Path | 설명 |
 |--------|------|------|
-| GET | `/api/tables` | Machbase TAG 테이블 목록 조회 |
+| GET | `/api/tables` | Machbase TAG 테이블 목록 조회(mounted backup DB 제외) |
 | POST | `/api/table` | TAG 테이블 생성 |
 | POST | `/api/cameras/ping` | IP 주소 ping 테스트 |
 | GET | `/api/media/heartbeat` | MediaMTX 상태 확인 |
