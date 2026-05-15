@@ -290,8 +290,12 @@ func (m *Machbase) ListTables(ctx context.Context) ([]string, error) {
 			continue
 		}
 
-		// Get columns for this table
-		columnSQL := fmt.Sprintf("SELECT NAME FROM M$SYS_COLUMNS WHERE TABLE_ID = %d ORDER BY NAME", tbl.ID)
+		// Get columns for this live database table. Mounted backup databases can
+		// expose the same TABLE_ID, so keep the DATABASE_ID tied to M$SYS_TABLES.
+		columnSQL := fmt.Sprintf(
+			"SELECT c.NAME FROM M$SYS_COLUMNS c, M$SYS_TABLES t WHERE c.TABLE_ID = t.ID AND c.DATABASE_ID = t.DATABASE_ID AND t.ID = %d AND t.DATABASE_ID = -1 ORDER BY c.NAME",
+			tbl.ID,
+		)
 		columnResp, err := m.Query(ctx, columnSQL)
 		if err != nil {
 			logger.GetLogger().Warnf("ListTables: failed to query columns for table %s: %v", name, err)
