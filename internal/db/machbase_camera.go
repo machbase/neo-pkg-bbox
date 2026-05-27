@@ -4,8 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+)
+
+const (
+	machbaseTypeDatetime = 6
+	machbaseTypeVarchar  = 5
+	machbaseTypeDouble   = 20
+	machbaseTypeJSON     = 61
+	machbaseTableTypeTag = 6
+	sysUserID            = 1
+	liveDatabaseID       = -1
 )
 
 // CreateTable creates a TAG table with the standard structure.
@@ -28,6 +39,7 @@ func (m *Machbase) CreateTable(ctx context.Context, tableName string) error {
 // CreateCameraEventTable creates {table}_event table.
 // If the table already exists, it will be reused.
 func (m *Machbase) CreateCameraEventTable(ctx context.Context, tableName string) error {
+	eventTable := tableName + "_event"
 	sqlEvent := fmt.Sprintf(`CREATE TAG TABLE IF NOT EXISTS %s_event (
     name VARCHAR(128) PRIMARY KEY,
     time DATETIME BASETIME,
@@ -41,9 +53,96 @@ func (m *Machbase) CreateCameraEventTable(ctx context.Context, tableName string)
 ) TAG_PARTITION_COUNT=1, TAG_DATA_PART_SIZE=4194304`, tableName)
 
 	if _, err := m.Query(ctx, sqlEvent); err != nil {
-		return fmt.Errorf("create table %s_event: %w", tableName, err)
+		if validateErr := m.ValidateCameraEventTable(ctx, tableName); validateErr == nil {
+			return nil
+		}
+		return fmt.Errorf("create table %s: %w", eventTable, err)
 	}
 
+	if err := m.ValidateCameraEventTable(ctx, tableName); err != nil {
+		return fmt.Errorf("validate table %s: %w", eventTable, err)
+	}
+
+	return nil
+}
+
+// ValidateCameraEventTable verifies that {table}_event is the expected live SYS TAG table.
+// Length is intentionally ignored for VARCHAR columns; user-created compatible
+// tables can be reused when the required column names and data types match.
+func (m *Machbase) ValidateCameraEventTable(ctx context.Context, tableName string) error {
+	eventTable := strings.ToUpper(tableName + "_event")
+	expected := map[string]int{
+		"NAME":                 machbaseTypeVarchar,
+		"TIME":                 machbaseTypeDatetime,
+		"VALUE":                machbaseTypeDouble,
+		"EXPRESSION_TEXT":      machbaseTypeVarchar,
+		"USED_COUNTS_SNAPSHOT": machbaseTypeJSON,
+		"CAMERA_ID":            machbaseTypeVarchar,
+		"RULE_ID":              machbaseTypeVarchar,
+		"RULE_NAME":            machbaseTypeVarchar,
+	}
+
+	sql := fmt.Sprintf(`
+SELECT c.NAME, c.TYPE
+FROM M$SYS_COLUMNS c, M$SYS_TABLES t
+WHERE c.TABLE_ID = t.ID
+  AND c.DATABASE_ID = t.DATABASE_ID
+  AND t.NAME = '%s'
+  AND t.TYPE = %d
+  AND t.DATABASE_ID = %d
+  AND t.USER_ID = %d
+ORDER BY c.ID`,
+		escapeSQLLiteral(eventTable),
+		machbaseTableTypeTag,
+		liveDatabaseID,
+		sysUserID,
+	)
+
+	resp, err := m.Query(ctx, sql)
+	if err != nil {
+		return fmt.Errorf("read columns: %w", err)
+	}
+
+	var rows []struct {
+		Name string `json:"NAME"`
+		Type int    `json:"TYPE"`
+	}
+	if err := json.Unmarshal(resp.Data.Rows, &rows); err != nil {
+		return fmt.Errorf("parse columns: %w", err)
+	}
+	if len(rows) == 0 {
+		return fmt.Errorf("%s does not exist as live SYS TAG table", eventTable)
+	}
+
+	actual := make(map[string]int, len(rows))
+	for _, row := range rows {
+		actual[strings.ToUpper(row.Name)] = row.Type
+	}
+
+	var missing []string
+	var mismatched []string
+	for name, expectedType := range expected {
+		actualType, ok := actual[name]
+		if !ok {
+			missing = append(missing, name)
+			continue
+		}
+		if actualType != expectedType {
+			mismatched = append(mismatched, fmt.Sprintf("%s expected TYPE=%d got TYPE=%d", name, expectedType, actualType))
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(mismatched)
+	if len(missing) > 0 || len(mismatched) > 0 {
+		parts := make([]string, 0, 2)
+		if len(missing) > 0 {
+			parts = append(parts, "missing columns: "+strings.Join(missing, ", "))
+		}
+		if len(mismatched) > 0 {
+			parts = append(parts, "type mismatch: "+strings.Join(mismatched, "; "))
+		}
+		return fmt.Errorf("%s schema mismatch: %s", eventTable, strings.Join(parts, "; "))
+	}
 	return nil
 }
 
