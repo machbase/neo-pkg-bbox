@@ -109,14 +109,16 @@ func (h *Handler) PostEventRules(c *gin.Context) {
 		return
 	}
 
+	// 이벤트룰 추가 시 event 테이블 생성. 생성 실패 시 rule만 저장되는
+	// 불일치 상태를 만들지 않도록 config 저장 전에 실패 처리한다.
+	if err := h.machbase.CreateCameraEventTable(c.Request.Context(), camera.Table); err != nil {
+		logger.GetLogger().Errorf("PostEventRules[%s]: failed to create event table: %v", req.CameraID, err)
+		errorResponse(c, tick, http.StatusInternalServerError, fmt.Sprintf("failed to create event table: %v", err))
+		return
+	}
+
 	// EventRule 추가
 	camera.EventRule = append(camera.EventRule, req.Rule)
-
-	// 이벤트룰 추가 시 event 테이블 생성
-	if err := h.machbase.CreateCameraEventTable(c.Request.Context(), camera.Table); err != nil {
-		logger.GetLogger().Warnf("PostEventRules[%s]: failed to create event table (may already exist): %v", req.CameraID, err)
-		// 테이블 생성 실패해도 계속 진행 (이미 존재할 수 있음)
-	}
 
 	// 파일 저장
 	cameraJSON, err := json.MarshalIndent(camera, "", "  ")

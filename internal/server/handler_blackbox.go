@@ -3,8 +3,6 @@ package server
 import (
 	"fmt"
 	"math"
-	"github.com/machbase/neo-pkg-bbox/internal/db"
-	"github.com/machbase/neo-pkg-bbox/internal/logger"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/machbase/neo-pkg-bbox/internal/db"
+	"github.com/machbase/neo-pkg-bbox/internal/logger"
 )
 
 // GetCameras handles GET /api/cameras.
@@ -599,20 +599,37 @@ func (h *Handler) GetCameraEventCount(c *gin.Context) {
 
 	endNs := time.Now().UnixNano()
 
-	// 조회할 테이블 목록 수집 (중복 제거)
-	tables := make(map[string]bool)
+	// 주기 count는 새 이벤트 알림용이므로 enabled event rule이 있는 camera만 조회한다.
+	// event rule이 없는 table의 _event 조회 실패가 10초마다 반복되는 것을 방지한다.
+	type eventCountTarget struct {
+		Table    string
+		CameraID string
+	}
+	var targets []eventCountTarget
+	seenTargets := make(map[string]bool)
 	h.configMu.RLock()
 	for _, config := range h.cameraConfigs {
-		tables[config.Table] = true
+		if !hasEnabledEventRule(config) {
+			continue
+		}
+		key := config.Table + "\x00" + config.Name
+		if seenTargets[key] {
+			continue
+		}
+		seenTargets[key] = true
+		targets = append(targets, eventCountTarget{
+			Table:    config.Table,
+			CameraID: config.Name,
+		})
 	}
 	h.configMu.RUnlock()
 
 	ctx := c.Request.Context()
 	var total int64
-	for table := range tables {
-		count, err := h.machbase.CountCameraEvents(ctx, table, startNs, endNs, nil)
+	for _, target := range targets {
+		count, err := h.machbase.CountCameraEvents(ctx, target.Table, startNs, endNs, &db.CameraEventFilter{CameraID: target.CameraID})
 		if err != nil {
-			logger.GetLogger().Errorf("GetCameraEventCount: failed to count %s_event: %v", table, err)
+			logger.GetLogger().Errorf("GetCameraEventCount: failed to count %s_event for camera %s: %v", target.Table, target.CameraID, err)
 			continue
 		}
 		total += count
@@ -629,6 +646,18 @@ func (h *Handler) GetCameraEventCount(c *gin.Context) {
 	successResponse(c, tick, map[string]any{
 		"count": total,
 	})
+}
+
+func hasEnabledEventRule(config *CameraCreateRequest) bool {
+	if config == nil {
+		return false
+	}
+	for _, rule := range config.EventRule {
+		if rule.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func paginationValid(size int, page int) (int, int) {
