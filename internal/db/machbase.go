@@ -285,6 +285,15 @@ func (m *Machbase) login(ctx context.Context) (string, error) {
 // /web/* 경로는 user/password가 설정된 경우 JWT 인증을 사용한다.
 // 그 외 경로는 apiToken(Bearer)을 사용한다.
 func (m *Machbase) Forward(ctx context.Context, method, path string, rawQuery string, body io.Reader, contentType string, extraHeaders ...http.Header) (*http.Response, error) {
+	return m.forward(ctx, method, path, rawQuery, body, contentType, true, extraHeaders...)
+}
+
+// ForwardWithoutAuth proxies a request without adding Machbase authentication headers.
+func (m *Machbase) ForwardWithoutAuth(ctx context.Context, method, path string, rawQuery string, body io.Reader, contentType string, extraHeaders ...http.Header) (*http.Response, error) {
+	return m.forward(ctx, method, path, rawQuery, body, contentType, false, extraHeaders...)
+}
+
+func (m *Machbase) forward(ctx context.Context, method, path string, rawQuery string, body io.Reader, contentType string, useAuth bool, extraHeaders ...http.Header) (*http.Response, error) {
 	u := m.baseURL.JoinPath(path)
 	u.RawQuery = rawQuery
 
@@ -301,6 +310,10 @@ func (m *Machbase) Forward(ctx context.Context, method, path string, rawQuery st
 				req.Header.Set(key, v)
 			}
 		}
+	}
+
+	if !useAuth {
+		return m.client.Do(req)
 	}
 
 	// /web/* paths use JWT auth, others use apiToken

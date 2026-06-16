@@ -3,6 +3,7 @@ package server
 import (
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -53,15 +54,16 @@ func (h *Handler) ProxyMachbaseWeb(c *gin.Context) {
 		extra = append(extra, http.Header{"Authorization": {auth}})
 	}
 
-	resp, err := h.machbase.Forward(
-		c.Request.Context(),
-		c.Request.Method,
-		path,
-		c.Request.URL.RawQuery,
-		c.Request.Body,
-		c.GetHeader("Content-Type"),
-		extra...,
-	)
+	forward := h.machbase.Forward
+	// TQL chart resources are fetched anonymously by the browser after /db/tql.
+	// Adding /web JWT auth can either change Machbase's asset lookup scope or
+	// fail when the configured web login differs from the target server.
+	if isAnonymousChartAssetPath(path) {
+		forward = h.machbase.ForwardWithoutAuth
+		extra = nil
+	}
+
+	resp, err := forward(c.Request.Context(), c.Request.Method, path, c.Request.URL.RawQuery, c.Request.Body, c.GetHeader("Content-Type"), extra...)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"success": false, "reason": err.Error()})
 		return
@@ -76,4 +78,9 @@ func (h *Handler) ProxyMachbaseWeb(c *gin.Context) {
 
 	c.Status(resp.StatusCode)
 	io.Copy(c.Writer, resp.Body) //nolint:errcheck
+}
+
+func isAnonymousChartAssetPath(path string) bool {
+	return strings.HasPrefix(path, "/web/api/tql-assets/") ||
+		strings.HasPrefix(path, "/web/echarts/")
 }
