@@ -35,6 +35,7 @@ type MachbaseConfigAPI struct {
 	Scheme         string `json:"scheme"`
 	Host           string `json:"host"`
 	Port           int    `json:"port"`
+	Database       string `json:"database"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
 	Token          string `json:"token"`
 	User           string `json:"user"`
@@ -166,6 +167,10 @@ func retentionConfigChanged(oldCfg config.RetentionConfig, newCfg config.Retenti
 func cfgToDTO(cfg *config.AppConfig) AppConfigDTO {
 	retention := cfg.Retention
 	retention.ApplyDefaults()
+	database := cfg.Machbase.Database
+	if database == "" {
+		database = config.DefaultMachbaseDatabase
+	}
 	return AppConfigDTO{
 		Server: ServerConfigAPI{
 			Addr:      cfg.Server.Addr,
@@ -177,6 +182,7 @@ func cfgToDTO(cfg *config.AppConfig) AppConfigDTO {
 			Scheme:         cfg.Machbase.Scheme,
 			Host:           cfg.Machbase.Host,
 			Port:           cfg.Machbase.Port,
+			Database:       database,
 			TimeoutSeconds: cfg.Machbase.TimeoutSeconds,
 			Token:          cfg.Machbase.APIToken,
 			User:           cfg.Machbase.User,
@@ -231,6 +237,7 @@ func dtoToCfg(req *AppConfigDTO) config.AppConfig {
 			Scheme:         req.Machbase.Scheme,
 			Host:           req.Machbase.Host,
 			Port:           req.Machbase.Port,
+			Database:       req.Machbase.Database,
 			TimeoutSeconds: req.Machbase.TimeoutSeconds,
 			APIToken:       req.Machbase.Token,
 			User:           req.Machbase.User,

@@ -10,6 +10,7 @@ export const generalSettings: GeneralSettings = {
   machbase: {
     host: '127.0.0.1',
     port: 5654,
+    database: 'MACHBASEDB',
     timeoutSeconds: 30,
     useToken: false,
     apiToken: '',

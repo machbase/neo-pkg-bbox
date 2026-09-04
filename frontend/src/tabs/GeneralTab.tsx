@@ -129,6 +129,19 @@ export function GeneralTab({ settings, onChange }: GeneralTabProps) {
               })}
           />
           <Field
+            id="machbase-database"
+            label="Database"
+            value={settings.machbase.database}
+            onChange={(value) =>
+              onChange({
+                ...settings,
+                machbase: {
+                  ...settings.machbase,
+                  database: value,
+                },
+              })}
+          />
+          <Field
             id="machbase-timeout"
             label="Timeout Seconds"
             type="number"
