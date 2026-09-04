@@ -22,6 +22,7 @@ type Machbase struct {
 	apiToken string
 	user     string
 	password string
+	database string
 
 	// JWT token cache
 	jwtToken  string
@@ -48,6 +49,7 @@ func NewMachbase(cfg config.MachbaseConfig) (*Machbase, error) {
 		apiToken: cfg.APIToken,
 		user:     cfg.User,
 		password: cfg.Password,
+		database: cfg.Database,
 	}, nil
 }
 
@@ -93,6 +95,7 @@ func (m *Machbase) Query(ctx context.Context, sql string, opts ...QueryOption) (
 	q := u.Query()
 	q.Set("q", sql)
 	q.Set("rowsArray", "true")
+	q.Set("db", m.database)
 	if cfg.timeformat != "" {
 		q.Set("timeformat", cfg.timeformat)
 	}
@@ -189,6 +192,7 @@ func (m *Machbase) WriteRows(ctx context.Context, table string, columns []string
 	q.Set("timeformat", cfg.timeformat)
 	q.Set("tz", cfg.tz)
 	q.Set("method", cfg.method)
+	q.Set("db", m.database)
 	u.RawQuery = q.Encode()
 
 	var payload writeRequest
@@ -296,6 +300,13 @@ func (m *Machbase) ForwardWithoutAuth(ctx context.Context, method, path string, 
 func (m *Machbase) forward(ctx context.Context, method, path string, rawQuery string, body io.Reader, contentType string, useAuth bool, extraHeaders ...http.Header) (*http.Response, error) {
 	u := m.baseURL.JoinPath(path)
 	u.RawQuery = rawQuery
+	if strings.HasPrefix(path, "/db/") && m.database != "" {
+		q := u.Query()
+		if q.Get("db") == "" {
+			q.Set("db", m.database)
+			u.RawQuery = q.Encode()
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {

@@ -8,6 +8,7 @@ machbase:
   scheme: "http"
   host: 127.0.0.1
   port: 5654
+  database: "MACHBASEDB"
   timeout_seconds: 30
   api_token: ""
   user: "sys"

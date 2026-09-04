@@ -23,6 +23,7 @@ export interface ApiConfigData {
     scheme: string;
     host: string;
     port: number;
+    database: string;
     timeout_seconds: number;
     token: string;
   };

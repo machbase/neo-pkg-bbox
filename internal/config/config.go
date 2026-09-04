@@ -110,6 +110,9 @@ func applyEnvOverrides(cfg *AppConfig) {
 			cfg.Machbase.Port = p
 		}
 	}
+	if v := os.Getenv("BB_MACHBASE_DATABASE"); v != "" {
+		cfg.Machbase.Database = v
+	}
 }
 
 // resolveRelativePaths resolves relative path fields in the config
@@ -137,6 +140,7 @@ func resolveRelativePaths(cfg *AppConfig, base string) {
 }
 
 func applyDefaults(cfg *AppConfig) {
+	cfg.Machbase.ApplyDefaults()
 	cfg.Mediamtx.ApplyDefaults()
 	cfg.Retention.ApplyDefaults()
 	cfg.Event.ApplyDefaults()

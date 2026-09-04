@@ -126,6 +126,20 @@ func TestLoad_MediamtxDefaultsApplied(t *testing.T) {
 	assert.NotEmpty(t, cfg.Mediamtx.WebRTCHost) // detectOutboundIP 또는 Host 폴백
 }
 
+func TestLoad_MachbaseDatabaseDefaultsAndOverride(t *testing.T) {
+	dir := t.TempDir()
+	defaultPath := writeConfig(t, dir, `machbase: {}`)
+
+	cfg, err := Load(defaultPath)
+	require.NoError(t, err)
+	assert.Equal(t, DefaultMachbaseDatabase, cfg.Machbase.Database)
+
+	t.Setenv("BB_MACHBASE_DATABASE", "CODEX_V870_TEST")
+	cfg, err = Load(defaultPath)
+	require.NoError(t, err)
+	assert.Equal(t, "CODEX_V870_TEST", cfg.Machbase.Database)
+}
+
 // TestLoad_MediamtxCustomValuesPreserved: mediamtx에 명시적으로 설정한 값은 기본값으로 덮어쓰이지 않는지 검증합니다.
 func TestLoad_MediamtxCustomValuesPreserved(t *testing.T) {
 	dir := t.TempDir()

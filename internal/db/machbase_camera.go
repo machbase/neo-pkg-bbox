@@ -16,7 +16,6 @@ const (
 	machbaseTypeJSON     = 61
 	machbaseTableTypeTag = 6
 	sysUserID            = 1
-	liveDatabaseID       = -1
 )
 
 // CreateTable creates a TAG table with the standard structure.
@@ -87,14 +86,14 @@ SELECT c.NAME, c.TYPE
 FROM M$SYS_COLUMNS c, M$SYS_TABLES t
 WHERE c.TABLE_ID = t.ID
   AND c.DATABASE_ID = t.DATABASE_ID
+  AND c.TABLESPACE_ID = t.TABLESPACE_ID
   AND t.NAME = '%s'
   AND t.TYPE = %d
-  AND t.DATABASE_ID = %d
+  AND t.DATABASE_NAME = CURRENT_DATABASE()
   AND t.USER_ID = %d
 ORDER BY c.ID`,
 		escapeSQLLiteral(eventTable),
 		machbaseTableTypeTag,
-		liveDatabaseID,
 		sysUserID,
 	)
 
@@ -148,7 +147,7 @@ ORDER BY c.ID`,
 
 // TableExists returns true if a TAG table with the given name exists.
 func (m *Machbase) TableExists(ctx context.Context, tableName string) (bool, error) {
-	sql := fmt.Sprintf("SELECT COUNT(*) as CNT FROM M$SYS_TABLES WHERE NAME = '%s' AND TYPE = 6",
+	sql := fmt.Sprintf("SELECT COUNT(*) as CNT FROM M$SYS_TABLES WHERE NAME = '%s' AND TYPE = 6 AND DATABASE_NAME = CURRENT_DATABASE()",
 		escapeSQLLiteral(strings.ToUpper(tableName)))
 	resp, err := m.Query(ctx, sql)
 	if err != nil {

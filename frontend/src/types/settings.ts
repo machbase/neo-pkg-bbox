@@ -12,6 +12,7 @@ export interface ServerPaths {
 export interface MachbaseSettings {
   host: string;
   port: number;
+  database: string;
   timeoutSeconds: number;
   useToken: boolean;
   apiToken: string;

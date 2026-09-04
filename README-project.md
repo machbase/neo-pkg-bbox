@@ -65,6 +65,7 @@ machbase:
   scheme: "http"
   host: 127.0.0.1
   port: 5654
+  database: "MACHBASEDB"
   timeout_seconds: 30
   api_token: ""                  # Machbase API 토큰 (필요 시)
 
@@ -203,7 +204,7 @@ cd neo-blackbox-linux-amd64
 
 # 환경변수로 오버라이드 (config.yaml 값 무시)
 BB_ADDR=0.0.0.0:9000 ./bin/neo-blackbox -config config/config.yaml
-BB_MACHBASE_HOST=10.0.0.5 BB_MACHBASE_PORT=5655 ./bin/neo-blackbox -config config/config.yaml
+BB_MACHBASE_HOST=10.0.0.5 BB_MACHBASE_PORT=5655 BB_MACHBASE_DATABASE=MACHBASEDB ./bin/neo-blackbox -config config/config.yaml
 ```
 
 > **주의**: `config.yaml`의 상대경로는 **config 파일 위치(`config/`) 기준**입니다.

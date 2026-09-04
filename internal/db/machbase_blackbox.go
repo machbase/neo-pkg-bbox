@@ -239,7 +239,7 @@ func (m *Machbase) ListTags(ctx context.Context) ([]string, error) {
 func (m *Machbase) ListTagTables(ctx context.Context) ([]string, error) {
 	// BBOX currently talks to Machbase through the REST API, so it operates on SYS-owned tables.
 	// If native DB connections are added later, filter by the connected user's M$SYS_USERS.USER_ID.
-	sql := "SELECT NAME FROM M$SYS_TABLES WHERE TYPE=6 AND FLAG=0 AND DATABASE_ID = -1 AND USER_ID = 1 AND NAME NOT LIKE '%_EVENT' AND NAME NOT LIKE '%_LOG' ORDER BY NAME"
+	sql := "SELECT NAME FROM M$SYS_TABLES WHERE TYPE=6 AND FLAG=0 AND DATABASE_NAME = CURRENT_DATABASE() AND USER_ID = 1 AND NAME NOT LIKE '%_EVENT' AND NAME NOT LIKE '%_LOG' ORDER BY NAME"
 	resp, err := m.Query(ctx, sql)
 	if err != nil {
 		return nil, err
@@ -266,7 +266,7 @@ func (m *Machbase) ListTables(ctx context.Context) ([]string, error) {
 	// First, get all TAG tables (TYPE = 6) with their IDs
 	// BBOX currently talks to Machbase through the REST API, so it operates on SYS-owned tables.
 	// If native DB connections are added later, filter by the connected user's M$SYS_USERS.USER_ID.
-	sql := "SELECT ID, NAME FROM M$SYS_TABLES WHERE TYPE = 6 AND DATABASE_ID = -1 AND USER_ID = 1 ORDER BY NAME"
+	sql := "SELECT ID, NAME FROM M$SYS_TABLES WHERE TYPE = 6 AND DATABASE_NAME = CURRENT_DATABASE() AND USER_ID = 1 ORDER BY NAME"
 	resp, err := m.Query(ctx, sql)
 	if err != nil {
 		return nil, err
@@ -290,10 +290,9 @@ func (m *Machbase) ListTables(ctx context.Context) ([]string, error) {
 			continue
 		}
 
-		// Get columns for this live database table. Mounted backup databases can
-		// expose the same TABLE_ID, so keep the DATABASE_ID tied to M$SYS_TABLES.
+		// Keep catalog identity scoped to the selected database and tablespace.
 		columnSQL := fmt.Sprintf(
-			"SELECT c.NAME FROM M$SYS_COLUMNS c, M$SYS_TABLES t WHERE c.TABLE_ID = t.ID AND c.DATABASE_ID = t.DATABASE_ID AND t.ID = %d AND t.DATABASE_ID = -1 ORDER BY c.NAME",
+			"SELECT c.NAME FROM M$SYS_COLUMNS c, M$SYS_TABLES t WHERE c.TABLE_ID = t.ID AND c.DATABASE_ID = t.DATABASE_ID AND c.TABLESPACE_ID = t.TABLESPACE_ID AND t.ID = %d AND t.DATABASE_NAME = CURRENT_DATABASE() ORDER BY c.NAME",
 			tbl.ID,
 		)
 		columnResp, err := m.Query(ctx, columnSQL)
