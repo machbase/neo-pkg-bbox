@@ -1,8 +1,47 @@
 # Blackbox Backend API Specification
 
+## POST /api/databases
+
+입력한 Machbase REST 접속 정보로 현재 계정 또는 API token이 사용할 수 있는 active database를 조회한다. `api_token`이 비어 있으면 Machbase Neo REST의 기본 사용자 정책을 따른다. 이전 API의 `token` 요청 필드도 호환된다.
+
+Request:
+```json
+{
+    "scheme": "http",
+    "host": "127.0.0.1",
+    "port": 5654,
+    "database": "MACHBASEDB",
+    "timeout_seconds": 30,
+    "api_token": ""
+}
+```
+
+Response data:
+```json
+{
+    "databases": [
+        {
+            "name": "MACHBASEDB",
+            "kind": "ACTIVE",
+            "accessMode": "READ_WRITE",
+            "canUse": true,
+            "state": "NORMAL",
+            "isDefault": true,
+            "writable": true
+        }
+    ]
+}
+```
+
+`POST /api/config`은 저장 전에 선택한 database가 active, accessible, `READ_WRITE`인지 확인한다. Machbase 접속 정보가 변경되면 성공 응답의 `data.restart_required`가 `true`이며, 실행 중인 DB client에는 서비스 재시작 후 적용된다. Database 이름은 대문자로 정규화해 저장한다.
+
+---
+
 ## GET /api/tables
 
 Machbase TAG 테이블 목록 조회 (`_event`, `_log` 접미사 테이블 및 mounted backup database 테이블 제외)
+
+테이블 탐색과 orphan 검사는 `USER_ID = CURRENT_USER_ID()` 조건을 사용하여 현재 REST 실행 사용자가 소유한 테이블만 대상으로 한다. token이 없으면 REST가 SYS로 실행되므로 기존 SYS 소유 테이블 동작과 같다. Blackbox는 일반적으로 카메라 등록 과정에서 필요한 TAG 테이블을 현재 사용자 소유로 자동 생성하므로, 다른 사용자가 소유하고 GRANT로 접근하는 테이블을 목록에 포함하지 않아도 일반 사용 흐름에는 문제가 없다. 향후 다른 사용자 소유 테이블을 GRANT 받아 Blackbox에서 사용해야 하는 실제 요구가 생기면, owner 조건과 필요한 쓰기 권한 확인 정책을 함께 확장한다. 이 경우 서로 다른 사용자가 동일한 이름의 테이블을 소유할 수 있으므로, 테이블 식별자와 이를 사용하는 모든 쿼리는 반드시 `사용자.테이블` 형식의 완전 수식 이름을 사용해야 한다.
 
 Response:
 ```json

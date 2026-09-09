@@ -69,11 +69,137 @@ type QueryResponse struct {
 	} `json:"data"`
 }
 
+type DatabaseInfo struct {
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	AccessMode string `json:"accessMode"`
+	CanUse     bool   `json:"canUse"`
+	State      string `json:"state"`
+	IsDefault  bool   `json:"isDefault"`
+	Writable   bool   `json:"writable"`
+}
+
+func databaseString(value any) string {
+	if value == nil {
+		return ""
+	}
+	return strings.ToUpper(strings.TrimSpace(fmt.Sprint(value)))
+}
+
+func databaseBool(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case float64:
+		return typed != 0
+	case json.Number:
+		return typed.String() != "0"
+	default:
+		text := strings.ToLower(strings.TrimSpace(fmt.Sprint(value)))
+		return text == "1" || text == "true" || text == "yes" || text == "y"
+	}
+}
+
+func databaseRowValues(row json.RawMessage) ([]any, error) {
+	var values []any
+	if err := json.Unmarshal(row, &values); err == nil {
+		if len(values) < 6 {
+			return nil, fmt.Errorf("expected 6 columns, got %d", len(values))
+		}
+		return values, nil
+	}
+
+	var object map[string]any
+	if err := json.Unmarshal(row, &object); err != nil {
+		return nil, err
+	}
+	return []any{
+		object["NAME"],
+		object["KIND"],
+		object["ACCESS_MODE"],
+		object["CAN_USE"],
+		object["STATE"],
+		object["IS_DEFAULT"],
+	}, nil
+}
+
+func parseDatabaseRows(raw json.RawMessage) ([]DatabaseInfo, error) {
+	var rows []json.RawMessage
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, fmt.Errorf("decode database rows: %w", err)
+	}
+	databases := make([]DatabaseInfo, 0, len(rows))
+	for _, row := range rows {
+		values, err := databaseRowValues(row)
+		if err != nil {
+			return nil, fmt.Errorf("decode database row: %w", err)
+		}
+		accessMode := databaseString(values[2])
+		info := DatabaseInfo{
+			Name:       databaseString(values[0]),
+			Kind:       databaseString(values[1]),
+			AccessMode: accessMode,
+			CanUse:     databaseBool(values[3]),
+			State:      databaseString(values[4]),
+			IsDefault:  databaseBool(values[5]),
+			Writable:   accessMode == "READ_WRITE",
+		}
+		if info.Name != "" {
+			databases = append(databases, info)
+		}
+	}
+	return databases, nil
+}
+
+func (m *Machbase) ListDatabases(ctx context.Context) ([]DatabaseInfo, error) {
+	result, err := m.Query(ctx, `SELECT NAME, KIND, ACCESS_MODE, CAN_USE, STATE, IS_DEFAULT
+FROM V$DATABASES
+WHERE KIND = 'ACTIVE' AND CAN_USE = 1
+ORDER BY IS_DEFAULT DESC, NAME`, withoutDatabase())
+	if err != nil {
+		return nil, err
+	}
+	return parseDatabaseRows(result.Data.Rows)
+}
+
+func (m *Machbase) ValidateDatabase(ctx context.Context, requireWritable bool) (*DatabaseInfo, error) {
+	name := strings.ToUpper(strings.TrimSpace(m.database))
+	if name == "" {
+		name = config.DefaultMachbaseDatabase
+	}
+	result, err := m.Query(ctx, "SELECT NAME, KIND, ACCESS_MODE, CAN_USE, STATE, IS_DEFAULT FROM V$DATABASES WHERE NAME = '"+escapeSQLLiteral(name)+"'")
+	if err != nil {
+		return nil, err
+	}
+	databases, err := parseDatabaseRows(result.Data.Rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(databases) == 0 || databases[0].Name != name {
+		return nil, fmt.Errorf("database '%s' does not exist or is not accessible", name)
+	}
+	database := databases[0]
+	if database.Kind != "ACTIVE" || !database.CanUse {
+		return nil, fmt.Errorf("database '%s' is not an active usable database", name)
+	}
+	if requireWritable && !database.Writable {
+		return nil, fmt.Errorf("database '%s' must be READ_WRITE", name)
+	}
+	return &database, nil
+}
+
 // QueryOption configures query behavior.
 type QueryOption func(*queryConfig)
 
 type queryConfig struct {
-	timeformat string
+	timeformat   string
+	omitDatabase bool
+}
+
+func withoutDatabase() QueryOption {
+	return func(c *queryConfig) {
+		c.omitDatabase = true
+	}
 }
 
 // WithTimeformat sets the timeformat for the query.
@@ -95,7 +221,9 @@ func (m *Machbase) Query(ctx context.Context, sql string, opts ...QueryOption) (
 	q := u.Query()
 	q.Set("q", sql)
 	q.Set("rowsArray", "true")
-	q.Set("db", m.database)
+	if !cfg.omitDatabase {
+		q.Set("db", m.database)
+	}
 	if cfg.timeformat != "" {
 		q.Set("timeformat", cfg.timeformat)
 	}
