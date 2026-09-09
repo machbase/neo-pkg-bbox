@@ -15,7 +15,6 @@ const (
 	machbaseTypeDouble   = 20
 	machbaseTypeJSON     = 61
 	machbaseTableTypeTag = 6
-	sysUserID            = 1
 )
 
 // CreateTable creates a TAG table with the standard structure.
@@ -65,7 +64,8 @@ func (m *Machbase) CreateCameraEventTable(ctx context.Context, tableName string)
 	return nil
 }
 
-// ValidateCameraEventTable verifies that {table}_event is the expected live SYS TAG table.
+// ValidateCameraEventTable verifies that {table}_event is the expected live TAG table
+// owned by the effective REST user.
 // Length is intentionally ignored for VARCHAR columns; user-created compatible
 // tables can be reused when the required column names and data types match.
 func (m *Machbase) ValidateCameraEventTable(ctx context.Context, tableName string) error {
@@ -90,11 +90,10 @@ WHERE c.TABLE_ID = t.ID
   AND t.NAME = '%s'
   AND t.TYPE = %d
   AND t.DATABASE_NAME = CURRENT_DATABASE()
-  AND t.USER_ID = %d
+  AND t.USER_ID = CURRENT_USER_ID()
 ORDER BY c.ID`,
 		escapeSQLLiteral(eventTable),
 		machbaseTableTypeTag,
-		sysUserID,
 	)
 
 	resp, err := m.Query(ctx, sql)
@@ -110,7 +109,7 @@ ORDER BY c.ID`,
 		return fmt.Errorf("parse columns: %w", err)
 	}
 	if len(rows) == 0 {
-		return fmt.Errorf("%s does not exist as live SYS TAG table", eventTable)
+		return fmt.Errorf("%s does not exist as a live TAG table owned by the current user", eventTable)
 	}
 
 	actual := make(map[string]int, len(rows))

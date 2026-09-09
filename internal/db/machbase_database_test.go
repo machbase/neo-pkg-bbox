@@ -41,6 +41,19 @@ func writeQuerySuccess(t *testing.T, w http.ResponseWriter) {
 	}))
 }
 
+func writeDatabaseQuerySuccess(t *testing.T, w http.ResponseWriter, accessMode string) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"data": map[string]any{
+			"columns": []string{"NAME", "KIND", "ACCESS_MODE", "CAN_USE", "STATE", "IS_DEFAULT"},
+			"types":   []string{"string", "string", "string", "int32", "string", "int32"},
+			"rows":    [][]any{{"MACHBASEDB", "ACTIVE", accessMode, 1, "NORMAL", 1}},
+		},
+	}))
+}
+
 func TestMachbaseRequestsIncludeConfiguredDatabase(t *testing.T) {
 	const database = "CODEX_V870_TEST"
 	requests := make(chan *http.Request, 2)
@@ -107,4 +120,56 @@ func TestMachbaseForwardAddsDatabaseUnlessCallerProvidesOne(t *testing.T) {
 
 	assert.Equal(t, configured, <-requests)
 	assert.Equal(t, "EXPLICIT_DB", <-requests)
+}
+
+func TestListDatabasesUsesTokenAndMapsAccessMode(t *testing.T) {
+	var authorization string
+	var database string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		database = r.URL.Query().Get("db")
+		writeDatabaseQuerySuccess(t, w, "READ_WRITE")
+	}))
+	defer srv.Close()
+
+	cfg := testMachbaseConfig(t, srv.URL, "MACHBASEDB")
+	cfg.APIToken = "secret-token"
+	client, err := NewMachbase(cfg)
+	require.NoError(t, err)
+
+	databases, err := client.ListDatabases(context.Background())
+	require.NoError(t, err)
+	require.Len(t, databases, 1)
+	assert.Equal(t, "Bearer secret-token", authorization)
+	assert.Empty(t, database)
+	assert.Equal(t, "MACHBASEDB", databases[0].Name)
+	assert.True(t, databases[0].Writable)
+}
+
+func TestValidateDatabaseRejectsReadOnlyTarget(t *testing.T) {
+	var database string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		database = r.URL.Query().Get("db")
+		writeDatabaseQuerySuccess(t, w, "READ_ONLY")
+	}))
+	defer srv.Close()
+
+	client, err := NewMachbase(testMachbaseConfig(t, srv.URL, "MACHBASEDB"))
+	require.NoError(t, err)
+	_, err = client.ValidateDatabase(context.Background(), true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "READ_WRITE")
+	assert.Equal(t, "MACHBASEDB", database, "database validation query must use the selected database")
+}
+
+func TestParseDatabaseRowsAcceptsObjectRows(t *testing.T) {
+	raw := json.RawMessage(`[{"NAME":"MACHBASEDB","KIND":"ACTIVE","ACCESS_MODE":"READ_WRITE","CAN_USE":1,"STATE":"NORMAL","IS_DEFAULT":1}]`)
+
+	databases, err := parseDatabaseRows(raw)
+	require.NoError(t, err)
+	require.Len(t, databases, 1)
+	assert.Equal(t, "MACHBASEDB", databases[0].Name)
+	assert.True(t, databases[0].CanUse)
+	assert.True(t, databases[0].IsDefault)
+	assert.True(t, databases[0].Writable)
 }

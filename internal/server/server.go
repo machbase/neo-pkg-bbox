@@ -73,6 +73,7 @@ func (s *Server) routes(serveWeb bool) {
 	// App Config (server, machbase, ffmpeg.binary)
 	api.GET("/config", s.handler.GetAppConfig)
 	api.POST("/config", s.handler.PostAppConfig)
+	api.POST("/databases", s.handler.PostDatabases)
 	api.GET("/retention/status", s.handler.GetRetentionStatus)
 	api.POST("/retention/run", s.handler.PostRetentionRun)
 

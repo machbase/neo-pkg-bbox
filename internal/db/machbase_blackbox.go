@@ -237,9 +237,9 @@ func (m *Machbase) ListTags(ctx context.Context) ([]string, error) {
 // _event, _log 파생 테이블을 제외하고 청크 전용 메인 테이블만 반환.
 // 카메라 고아 설정파일 탐지용: 메인 테이블이 없을 때만 설정파일을 삭제하기 위함.
 func (m *Machbase) ListTagTables(ctx context.Context) ([]string, error) {
-	// BBOX currently talks to Machbase through the REST API, so it operates on SYS-owned tables.
-	// If native DB connections are added later, filter by the connected user's M$SYS_USERS.USER_ID.
-	sql := "SELECT NAME FROM M$SYS_TABLES WHERE TYPE=6 AND FLAG=0 AND DATABASE_NAME = CURRENT_DATABASE() AND USER_ID = 1 AND NAME NOT LIKE '%_EVENT' AND NAME NOT LIKE '%_LOG' ORDER BY NAME"
+	// Unauthenticated REST requests run as SYS, while API tokens run as their authenticated user.
+	// CURRENT_USER_ID() keeps the ownership scope correct for both paths without token-specific SQL.
+	sql := "SELECT NAME FROM M$SYS_TABLES WHERE TYPE=6 AND FLAG=0 AND DATABASE_NAME = CURRENT_DATABASE() AND USER_ID = CURRENT_USER_ID() AND NAME NOT LIKE '%_EVENT' AND NAME NOT LIKE '%_LOG' ORDER BY NAME"
 	resp, err := m.Query(ctx, sql)
 	if err != nil {
 		return nil, err
@@ -264,9 +264,9 @@ func (m *Machbase) ListTagTables(ctx context.Context) ([]string, error) {
 // Excludes _event and _log suffixed tables.
 func (m *Machbase) ListTables(ctx context.Context) ([]string, error) {
 	// First, get all TAG tables (TYPE = 6) with their IDs
-	// BBOX currently talks to Machbase through the REST API, so it operates on SYS-owned tables.
-	// If native DB connections are added later, filter by the connected user's M$SYS_USERS.USER_ID.
-	sql := "SELECT ID, NAME FROM M$SYS_TABLES WHERE TYPE = 6 AND DATABASE_NAME = CURRENT_DATABASE() AND USER_ID = 1 ORDER BY NAME"
+	// Unauthenticated REST requests run as SYS, while API tokens run as their authenticated user.
+	// CURRENT_USER_ID() keeps the ownership scope correct for both paths without token-specific SQL.
+	sql := "SELECT ID, NAME FROM M$SYS_TABLES WHERE TYPE = 6 AND DATABASE_NAME = CURRENT_DATABASE() AND USER_ID = CURRENT_USER_ID() ORDER BY NAME"
 	resp, err := m.Query(ctx, sql)
 	if err != nil {
 		return nil, err

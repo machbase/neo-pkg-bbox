@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/machbase/neo-pkg-bbox/internal/config"
+	"github.com/machbase/neo-pkg-bbox/internal/db"
 
 	"github.com/gin-gonic/gin"
 )
@@ -37,9 +38,17 @@ type MachbaseConfigAPI struct {
 	Port           int    `json:"port"`
 	Database       string `json:"database"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
-	Token          string `json:"token"`
+	APIToken       string `json:"api_token"`
+	LegacyToken    string `json:"token"`
 	User           string `json:"user"`
 	Password       string `json:"password,omitempty"`
+}
+
+func (cfg MachbaseConfigAPI) apiToken() string {
+	if cfg.APIToken != "" {
+		return cfg.APIToken
+	}
+	return cfg.LegacyToken
 }
 
 type FfmpegConfigAPI struct {
@@ -133,10 +142,22 @@ func (h *Handler) PostAppConfig(c *gin.Context) {
 	preservedEvent.ApplyDefaults()
 
 	cfg := dtoToCfg(&req)
+	cfg.Machbase.ApplyDefaults()
 	cfg.Server.Addr = preservedAddr
 	cfg.AI = preservedAI
 	cfg.Event = preservedEvent
 	retentionChanged := existingCfg == nil || retentionConfigChanged(oldRetention, cfg.Retention)
+	machbaseChanged := existingCfg == nil || !reflect.DeepEqual(existingCfg.Machbase, cfg.Machbase)
+
+	validationClient, err := db.NewMachbase(cfg.Machbase)
+	if err != nil {
+		errorResponse(c, tick, http.StatusBadRequest, "invalid machbase config: "+err.Error())
+		return
+	}
+	if _, err := validationClient.ValidateDatabase(c.Request.Context(), true); err != nil {
+		errorResponse(c, tick, http.StatusBadRequest, "machbase database validation failed: "+err.Error())
+		return
+	}
 
 	if err := os.MkdirAll(filepath.Dir(h.configPath), 0755); err != nil {
 		errorResponse(c, tick, http.StatusInternalServerError, "failed to create config dir: "+err.Error())
@@ -152,7 +173,35 @@ func (h *Handler) PostAppConfig(c *gin.Context) {
 		h.notifyRetentionScheduleReset()
 	}
 
-	successResponse(c, tick, nil)
+	successResponse(c, tick, gin.H{"restart_required": machbaseChanged})
+}
+
+func (h *Handler) PostDatabases(c *gin.Context) {
+	tick := time.Now()
+	var req MachbaseConfigAPI
+	if err := c.ShouldBindJSON(&req); err != nil {
+		errorResponse(c, tick, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+	cfg := config.MachbaseConfig{
+		Scheme:         req.Scheme,
+		Host:           req.Host,
+		Port:           req.Port,
+		Database:       req.Database,
+		TimeoutSeconds: req.TimeoutSeconds,
+		APIToken:       req.apiToken(),
+	}
+	client, err := db.NewMachbase(cfg)
+	if err != nil {
+		errorResponse(c, tick, http.StatusBadRequest, "invalid machbase config: "+err.Error())
+		return
+	}
+	databases, err := client.ListDatabases(c.Request.Context())
+	if err != nil {
+		errorResponse(c, tick, http.StatusBadRequest, "failed to list databases: "+err.Error())
+		return
+	}
+	successResponse(c, tick, gin.H{"databases": databases})
 }
 
 func normalizeRetentionConfig(cfg config.RetentionConfig) config.RetentionConfig {
@@ -184,7 +233,8 @@ func cfgToDTO(cfg *config.AppConfig) AppConfigDTO {
 			Port:           cfg.Machbase.Port,
 			Database:       database,
 			TimeoutSeconds: cfg.Machbase.TimeoutSeconds,
-			Token:          cfg.Machbase.APIToken,
+			APIToken:       cfg.Machbase.APIToken,
+			LegacyToken:    cfg.Machbase.APIToken,
 			User:           cfg.Machbase.User,
 		},
 		Ffmpeg: FfmpegConfigAPI{
@@ -239,7 +289,7 @@ func dtoToCfg(req *AppConfigDTO) config.AppConfig {
 			Port:           req.Machbase.Port,
 			Database:       req.Machbase.Database,
 			TimeoutSeconds: req.Machbase.TimeoutSeconds,
-			APIToken:       req.Machbase.Token,
+			APIToken:       req.Machbase.apiToken(),
 			User:           req.Machbase.User,
 			Password:       req.Machbase.Password,
 		},

@@ -1,5 +1,7 @@
 package config
 
+import "strings"
+
 const DefaultMachbaseDatabase = "MACHBASEDB"
 
 type MachbaseConfig struct {
@@ -27,6 +29,7 @@ func (m *MachbaseConfig) ApplyDefaults() {
 	if m.Database == "" {
 		m.Database = DefaultMachbaseDatabase
 	}
+	m.Database = strings.ToUpper(strings.TrimSpace(m.Database))
 	if m.TimeoutSeconds == 0 {
 		m.TimeoutSeconds = 10
 	}
