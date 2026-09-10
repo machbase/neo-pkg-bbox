@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/machbase/neo-pkg-bbox/internal/ffmpeg"
 	"github.com/machbase/neo-pkg-bbox/internal/logger"
 	"github.com/machbase/neo-pkg-bbox/internal/mediamtx"
+	"github.com/machbase/neo-pkg-bbox/internal/parentwatch"
 	"github.com/machbase/neo-pkg-bbox/internal/server"
 	"github.com/machbase/neo-pkg-bbox/internal/tools"
 	"github.com/machbase/neo-pkg-bbox/internal/watcher"
@@ -26,8 +28,10 @@ import (
 func main() {
 	var configFile string
 	var serveWeb bool
+	var parentPID int
 	flag.StringVar(&configFile, "config", "", "Path to the YAML configuration file (e.g., ./config.yaml)")
 	flag.BoolVar(&serveWeb, "web", false, "Serve web UI from {basedir}/web (default: false)")
+	flag.IntVar(&parentPID, "parent-pid", 0, "Exit gracefully when this parent process exits (default: disabled)")
 	flag.Parse()
 
 	if configFile == "" {
@@ -35,15 +39,51 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := run(context.Background(), configFile, serveWeb); err != nil {
+	if err := run(context.Background(), configFile, serveWeb, parentPID); err != nil {
 		fmt.Fprintf(os.Stderr, "neo-blackbox: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(c context.Context, path string, serveWeb bool) error {
+func run(c context.Context, path string, serveWeb bool, parentPID int) (retErr error) {
 	ctx, cancel := signal.NotifyContext(c, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+
+	var parentDone chan error
+	var parentMonitor parentwatch.Monitor
+	if parentPID < 0 {
+		return fmt.Errorf("parent PID must not be negative: %d", parentPID)
+	}
+	if parentPID > 0 {
+		var err error
+		parentMonitor, err = parentwatch.New(parentPID)
+		if err != nil {
+			return fmt.Errorf("monitor parent process: %w", err)
+		}
+		parentDone = make(chan error, 1)
+		go func() {
+			err := parentMonitor.Wait(ctx)
+			parentDone <- err
+			if err == nil {
+				fmt.Fprintf(os.Stderr, "neo-blackbox: parent process %d exited, shutting down\n", parentPID)
+				cancel()
+			} else if !errors.Is(err, context.Canceled) {
+				fmt.Fprintf(os.Stderr, "neo-blackbox: parent process monitor failed: %v\n", err)
+				cancel()
+			}
+		}()
+		defer func() {
+			cancel()
+			waitErr := <-parentDone
+			closeErr := parentMonitor.Close()
+			if retErr == nil && waitErr != nil && !errors.Is(waitErr, context.Canceled) {
+				retErr = fmt.Errorf("monitor parent process: %w", waitErr)
+			}
+			if retErr == nil && closeErr != nil {
+				retErr = fmt.Errorf("close parent process monitor: %w", closeErr)
+			}
+		}()
+	}
 
 	absConfigPath, err := filepath.Abs(path)
 	if err != nil {
@@ -99,6 +139,12 @@ func run(c context.Context, path string, serveWeb bool) error {
 		Port:       cfg.Mediamtx.Port,
 	}, logDir)
 	aiMgr := ai.New(cfg.AI, logDir)
+
+	// The supervisor may have exited while configuration or bundled tools were
+	// being prepared. Do not start child processes after that point.
+	if ctx.Err() != nil {
+		return nil
+	}
 
 	g, gctx := errgroup.WithContext(ctx)
 

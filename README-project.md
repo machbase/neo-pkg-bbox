@@ -202,10 +202,17 @@ cd neo-blackbox-linux-amd64
 # 웹 UI 포함 실행
 ./bin/neo-blackbox -config config/config.yaml -web
 
+# supervisor 종료 시 함께 정상 종료 (선택 사항)
+./bin/neo-blackbox -config config/config.yaml -web -parent-pid 12345
+
 # 환경변수로 오버라이드 (config.yaml 값 무시)
 BB_ADDR=0.0.0.0:9000 ./bin/neo-blackbox -config config/config.yaml
 BB_MACHBASE_HOST=10.0.0.5 BB_MACHBASE_PORT=5655 BB_MACHBASE_DATABASE=MACHBASEDB ./bin/neo-blackbox -config config/config.yaml
 ```
+
+`-parent-pid`를 생략하면 독립 실행 방식은 기존과 동일합니다. Machbase Neo
+패키지 launcher는 자신의 JSH PID를 전달하여 Neo 종료 후 백엔드 프로세스가
+남지 않도록 합니다.
 
 > **주의**: `config.yaml`의 상대경로는 **config 파일 위치(`config/`) 기준**입니다.
 > 패키지 루트(`neo-blackbox-linux-amd64/`)에서 실행하면 경로가 올바르게 해석됩니다.
