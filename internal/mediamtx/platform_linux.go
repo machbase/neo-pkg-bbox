@@ -12,7 +12,3 @@ func setPdeathsig(cmd *exec.Cmd) {
 		Pdeathsig: syscall.SIGTERM,
 	}
 }
-
-func sigterm() syscall.Signal {
-	return syscall.SIGTERM
-}

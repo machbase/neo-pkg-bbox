@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/machbase/neo-pkg-bbox/internal/logger"
+	"github.com/machbase/neo-pkg-bbox/internal/procutil"
 	"net/http"
 	"net/url"
 	"os"
@@ -176,8 +177,8 @@ func (r *Runner) Start() error {
 	return nil
 }
 
-// Stop은 실행 중인 MediaMTX 서버를 SIGTERM으로 종료한다.
-// 5초 내에 종료되지 않으면 SIGKILL로 강제 종료한다.
+// Stop은 실행 중인 MediaMTX 서버를 종료한다. Unix에서는 SIGTERM 후
+// timeout 시 SIGKILL, Windows에서는 자식까지 포함한 프로세스 트리를 종료한다.
 func (r *Runner) Stop() error {
 	r.mu.Lock()
 
@@ -192,8 +193,10 @@ func (r *Runner) Stop() error {
 
 	logger.GetLogger().Infof("[mediamtx] stopping (PID: %d)", pid)
 
-	if err := proc.Signal(sigterm()); err != nil {
-		return nil // 이미 종료된 경우 무시
+	if err := procutil.Terminate(proc); err != nil {
+		// The process may have exited between the state check and termination.
+		// Continue waiting so cmd.Wait can publish the actual state.
+		logger.GetLogger().Warnf("[mediamtx] terminate process tree failed (PID: %d): %v", pid, err)
 	}
 
 	// Start()의 goroutine이 cmd.Wait() 후 cmd=nil 로 설정할 때까지 폴링
@@ -214,8 +217,14 @@ func (r *Runner) Stop() error {
 	select {
 	case <-time.After(5 * time.Second):
 		logger.GetLogger().Warnf("[mediamtx] did not stop in 5s, killing (PID: %d)", pid)
-		proc.Kill()
-		<-done
+		if err := procutil.Kill(proc); err != nil {
+			logger.GetLogger().Warnf("[mediamtx] kill process tree failed (PID: %d): %v", pid, err)
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			return fmt.Errorf("mediamtx process tree did not exit after kill (PID: %d)", pid)
+		}
 	case <-done:
 	}
 
