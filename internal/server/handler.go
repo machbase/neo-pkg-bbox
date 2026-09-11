@@ -20,6 +20,7 @@ import (
 	"github.com/machbase/neo-pkg-bbox/internal/ffmpeg"
 	"github.com/machbase/neo-pkg-bbox/internal/logger"
 	"github.com/machbase/neo-pkg-bbox/internal/mediamtx"
+	"github.com/machbase/neo-pkg-bbox/internal/procutil"
 	"github.com/machbase/neo-pkg-bbox/internal/watcher"
 
 	"github.com/gin-gonic/gin"
@@ -52,6 +53,7 @@ var tagPattern = regexp.MustCompile(`^[\p{L}\p{N}_.:-]+$`)
 type cameraProcess struct {
 	cancel    context.CancelFunc // cancels the entire restart loop
 	startedAt time.Time
+	done      chan struct{} // closed after the restart loop and current ffmpeg exit
 	mu        sync.Mutex
 	cmd       *exec.Cmd // current ffmpeg cmd; nil while in backoff
 }
@@ -78,6 +80,7 @@ type Handler struct {
 	cacheMu                sync.RWMutex
 	processes              map[string]*cameraProcess
 	processMu              sync.Mutex
+	shuttingDown           bool
 	edgeState              map[string]bool // EDGE_ONLY 이전 상태: "camera_id.rule_id" → prev_result
 	edgeMu                 sync.Mutex
 	cameraConfigs          map[string]*CameraCreateRequest // camera_id → full camera config 캐시
@@ -377,6 +380,7 @@ func (h *Handler) Shutdown() {
 	}
 
 	h.processMu.Lock()
+	h.shuttingDown = true
 	procs := make(map[string]*cameraProcess, len(h.processes))
 	for k, v := range h.processes {
 		procs[k] = v
@@ -392,6 +396,37 @@ func (h *Handler) Shutdown() {
 		proc.mu.Unlock()
 		logger.GetLogger().Infof("[camera:%s] shutting down ffmpeg (PID: %d)", id, pid)
 		proc.cancel()
+	}
+
+	// Camera loops are not members of main's errgroup. Wait for them here so
+	// the native process cannot finish while an ffmpeg cleanup is still queued.
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for id, proc := range procs {
+		if proc.done == nil {
+			continue
+		}
+		select {
+		case <-proc.done:
+			logger.GetLogger().Infof("[camera:%s] ffmpeg shutdown complete", id)
+		case <-deadline.C:
+			logger.GetLogger().Warn("timed out waiting for ffmpeg shutdown")
+			for pendingID, pending := range procs {
+				pending.mu.Lock()
+				var child *os.Process
+				if pending.cmd != nil {
+					child = pending.cmd.Process
+				}
+				pending.mu.Unlock()
+				if child != nil {
+					logger.GetLogger().Warnf("[camera:%s] forcing ffmpeg process tree shutdown (PID: %d)", pendingID, child.Pid)
+					if err := procutil.Kill(child); err != nil {
+						logger.GetLogger().Warnf("[camera:%s] force-kill ffmpeg process tree failed (PID: %d): %v", pendingID, child.Pid, err)
+					}
+				}
+			}
+			return
+		}
 	}
 }
 

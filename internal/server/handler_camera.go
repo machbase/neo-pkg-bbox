@@ -11,6 +11,7 @@ import (
 	"github.com/machbase/neo-pkg-bbox/internal/dsl"
 	"github.com/machbase/neo-pkg-bbox/internal/logger"
 	"github.com/machbase/neo-pkg-bbox/internal/mediamtx"
+	"github.com/machbase/neo-pkg-bbox/internal/procutil"
 	"github.com/machbase/neo-pkg-bbox/internal/watcher"
 	"net/http"
 	"os"
@@ -1438,9 +1439,15 @@ func (h *Handler) enableCameraInternal(ctx context.Context, id string, cam *Came
 	proc := &cameraProcess{
 		cancel:    loopCancel,
 		startedAt: time.Now(),
+		done:      make(chan struct{}),
 	}
 
 	h.processMu.Lock()
+	if h.shuttingDown {
+		h.processMu.Unlock()
+		loopCancel()
+		return fmt.Errorf("server is shutting down")
+	}
 	h.processes[id] = proc
 	h.processMu.Unlock()
 
@@ -1484,6 +1491,7 @@ func (h *Handler) runCameraLoop(
 	)
 	backoff := initBackoff
 	isFirst := true
+	defer close(proc.done)
 
 	defer func() {
 		h.processMu.Lock()
@@ -1584,7 +1592,9 @@ func (h *Handler) runCameraLoop(
 		case <-ctx.Done():
 			// Intentional stop: kill ffmpeg and wait for it to exit.
 			if cmd.Process != nil {
-				cmd.Process.Kill()
+				if err := procutil.Kill(cmd.Process); err != nil {
+					logger.GetLogger().Warnf("[camera:%s] kill ffmpeg process tree failed (PID: %d): %v", id, cmd.Process.Pid, err)
+				}
 			}
 			exitErr = <-exited
 		case exitErr = <-exited:
